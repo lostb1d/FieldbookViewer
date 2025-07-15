@@ -1,3 +1,5 @@
 {
-  "root_folder": "R:/DATABASE/FIELDBOOK"
+  "root_folder": "R:/DATABASE/FIELDBOOK",
+  "fieldbook_folder": "D:/Fieldbook",
+  "plotregister_folder": "R:/DATABASE/PLOT_RAGISTER"
 }
