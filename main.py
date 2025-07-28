@@ -322,29 +322,50 @@ class BookViewer(QWidget):
         vdc_path = os.path.join(self.folder, vdc)
         if not os.path.isdir(vdc_path):
             return
+        # Sheet folders
         wards = [d for d in os.listdir(vdc_path) if os.path.isdir(os.path.join(vdc_path, d))]
         self.ward_combo.addItems(wards)
-        if wards:
+        # Add pseudo-ward for images directly inside VDC
+        direct_images = [f for f in os.listdir(vdc_path) if re.match(r"(\d+)-(\d+)\.jpe?g", f, re.IGNORECASE)]
+        if direct_images:
+            self.ward_combo.addItem("(No Sheet)")
+        if self.ward_combo.count() > 0:
             self.ward_combo.setCurrentIndex(0)
-            self.update_sheets(wards[0])
+            self.update_sheets(self.ward_combo.currentText())
+
 
     def update_sheets(self, ward):
         vdc = self.vdc_combo.currentText()
-        sheet_path = os.path.join(self.folder, vdc, ward)
+        vdc_path = os.path.join(self.folder, vdc)
         self.sheet_combo.clear()
-        if not os.path.isdir(sheet_path):
+        if ward == "(No Sheet)":
+            # No sheets for images directly in VDC
+            self.update_images("(No Sheet)")
             return
-        sheets = [d for d in os.listdir(sheet_path) if os.path.isdir(os.path.join(sheet_path, d))]
+        ward_path = os.path.join(vdc_path, ward)
+        if not os.path.isdir(ward_path):
+            return
+        sheets = [d for d in os.listdir(ward_path) if os.path.isdir(os.path.join(ward_path, d))]
         self.sheet_combo.addItems(sheets)
         if sheets:
             self.sheet_combo.setCurrentIndex(0)
             self.update_images(sheets[0])
 
+
     def update_images(self, sheet):
         vdc = self.vdc_combo.currentText()
         ward = self.ward_combo.currentText()
-        sheet_path = os.path.join(self.folder, vdc, ward, sheet)
         self.image_list.clear()
+        # Images directly under VDC
+        if ward == "(No Sheet)" or sheet == "(No Sheet)":
+            vdc_path = os.path.join(self.folder, vdc)
+            images = [f for f in os.listdir(vdc_path) if re.match(r"(\d+)-(\d+)\.jpe?g", f, re.IGNORECASE)]
+            self.image_list.addItems(images)
+            if images:
+                self.image_list.setCurrentRow(0)
+            return
+        # Regular path: VDC/Ward/Sheet
+        sheet_path = os.path.join(self.folder, vdc, ward, sheet)
         if not os.path.isdir(sheet_path):
             return
         images = [f for f in os.listdir(sheet_path) if re.match(r"(\d+)-(\d+)\.jpe?g", f, re.IGNORECASE)]
@@ -352,29 +373,48 @@ class BookViewer(QWidget):
         if images:
             self.image_list.setCurrentRow(0)
 
+
     def load_selected_image(self, filename):
         vdc = self.vdc_combo.currentText()
         ward = self.ward_combo.currentText()
         sheet = self.sheet_combo.currentText()
-        path = os.path.join(self.folder, vdc, ward, sheet, filename)
+        if ward == "(No Sheet)" or sheet == "(No Sheet)":
+            path = os.path.join(self.folder, vdc, filename)
+        else:
+            path = os.path.join(self.folder, vdc, ward, sheet, filename)
         if os.path.isfile(path):
             self.viewer.load_image(path)
+
 
     def search_image(self):
         vdc = self.vdc_combo.currentText()
         ward = self.ward_combo.currentText()
         sheet = self.sheet_combo.currentText()
         parcel = self.parcel_edit.text()
-        if not (vdc and ward and sheet and parcel):
+        if not (vdc and parcel):
             QMessageBox.warning(self, "Error", "Please select all fields and enter a parcel number.")
             return
-        sheet_path = os.path.join(self.folder, vdc, ward, sheet)
         found = False
-        for img in os.listdir(sheet_path):
-            m = re.match(r"(\d+)-(\d+)\.jpe?g", img, re.IGNORECASE)
-            if m:
-                low, high = int(m.group(1)), int(m.group(2))
-                if low <= int(parcel) <= high:
+        # Try images directly under VDC
+        if ward == "(No Sheet)" or not ward:
+            vdc_path = os.path.join(self.folder, vdc)
+            for img in os.listdir(vdc_path):
+                m = re.match(r"(\d+)-(\d+)\.jpe?g", img, re.IGNORECASE)
+                if m and int(m.group(1)) <= int(parcel) <= int(m.group(2)):
+                    image_path = os.path.join(vdc_path, img)
+                    found = True
+                    viewer = ImageViewerWindow(image_path)
+                    viewer.show()
+                    viewer.raise_()
+                    viewer.activateWindow()
+                    self._last_viewer = viewer
+                    break
+        else:
+            # Try inside selection path
+            sheet_path = os.path.join(self.folder, vdc, ward, sheet)
+            for img in os.listdir(sheet_path):
+                m = re.match(r"(\d+)-(\d+)\.jpe?g", img, re.IGNORECASE)
+                if m and int(m.group(1)) <= int(parcel) <= int(m.group(2)):
                     image_path = os.path.join(sheet_path, img)
                     found = True
                     viewer = ImageViewerWindow(image_path)
@@ -384,7 +424,8 @@ class BookViewer(QWidget):
                     self._last_viewer = viewer
                     break
         if not found:
-            QMessageBox.warning(self, "Not Found", "Parcel not found in this sheet.")
+            QMessageBox.warning(self, "Not Found", "Parcel not found in this location.")
+
 
 # --- Main Window ---
 class MainWindow(QMainWindow):
