@@ -3,13 +3,19 @@ import os
 import re
 import sqlite3
 import json
+import io
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QFileDialog, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QMessageBox, QFormLayout, QGroupBox, QAction, QListWidget, QStackedWidget
 )
-from PyQt5.QtGui import QPixmap, QFont, QIntValidator, QIcon, QPalette, QPainter
-from PyQt5.QtCore import Qt, QRectF, QPoint
+from PyQt5.QtGui import QPixmap, QIntValidator, QIcon, QPalette, QPainter, QPen
+from PyQt5.QtCore import Qt, QRectF, QPoint, QBuffer
+
+from PIL import Image
+from docx import Document
+from docx.shared import Inches
 
 # --- Config Helper ---
 class Config:
@@ -17,21 +23,17 @@ class Config:
         self.path = path
         self.data = {}
         self.load()
-
     def load(self):
         if os.path.exists(self.path):
             with open(self.path, "r", encoding="utf-8") as f:
                 self.data = json.load(f)
         else:
             self.data = {}
-
     def save(self):
         with open(self.path, "w", encoding="utf-8") as f:
             json.dump(self.data, f, indent=2)
-
     def get_folder(self, key):
         return self.data.get(key, "")
-
     def set_folder(self, key, folder):
         self.data[key] = folder
         self.save()
@@ -41,7 +43,6 @@ class UserDB:
     def __init__(self, db_path="users.db"):
         self.conn = sqlite3.connect(db_path)
         self.create_table()
-
     def create_table(self):
         self.conn.execute('''CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -53,14 +54,58 @@ class UserDB:
         if not cur.fetchone():
             self.conn.execute("INSERT INTO users VALUES (?, ?, ?)", ('admin', 'admin', 'admin'))
             self.conn.commit()
-
     def validate(self, username, password):
         cur = self.conn.cursor()
         cur.execute("SELECT role FROM users WHERE username=? AND password=?", (username, password))
         row = cur.fetchone()
         return row[0] if row else None
 
-# --- Enhanced Image Viewer with Zoom, Pan (no fit-to-display) ---
+# --- Fieldbook DOCX Manager (session-wide singleton) ---
+class FieldbookDocManager:
+    def __init__(self):
+        self.doc = None
+        self.section = None
+        self.images_on_page = 0
+        self.max_images_per_page = 3
+        self.loaded_template = None
+
+    def new_from_template(self, template_path):
+        self.doc = Document(template_path)
+        self.loaded_template = template_path
+        self.section = self.doc.sections[0]
+        self.images_on_page = 0
+
+    def add_image(self, pil_img):
+        if self.doc is None:
+            raise RuntimeError("No doc loaded")
+        avail_width = self.section.page_width - self.section.left_margin - self.section.right_margin
+        temp_io = io.BytesIO()
+        pil_img.save(temp_io, format="PNG")
+        temp_io.seek(0)
+        if self.images_on_page >= self.max_images_per_page:
+            self.doc.add_page_break()
+            self.images_on_page = 0
+        # FIX: pass the Length directly, do NOT wrap with Inches()
+        self.doc.add_picture(temp_io, width=avail_width)
+        self.doc.add_paragraph("")
+        self.images_on_page += 1
+
+    def save(self, path):
+        if self.doc:
+            self.doc.save(path)
+
+    def is_loaded(self):
+        return self.doc is not None
+
+    def close(self):
+        self.doc = None
+        self.section = None
+        self.loaded_template = None
+        self.images_on_page = 0
+
+fieldbook_doc_mgr = FieldbookDocManager()  # global for this session
+
+# --- Enhanced Image Viewer ---
 class EnhancedImageViewer(QGraphicsView):
     def __init__(self, image_path=None):
         super().__init__()
@@ -73,9 +118,6 @@ class EnhancedImageViewer(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setDragMode(QGraphicsView.NoDrag)
         self._zoom = 1.0
-        self._panning = False
-        self._start = None
-        self._rect_item = None
         self._pan = False
         self._pan_start = QPoint()
 
@@ -128,27 +170,29 @@ class EnhancedImageViewer(QGraphicsView):
         self.resetTransform()
         self._zoom = 1.0
 
-# --- Image Viewer Window with Crop and Clipboard ---
+# --- Image Viewer Window with Crop, Clipboard and Fieldbook Integration ---
 class ImageViewerWindow(QMainWindow):
-    def __init__(self, image_path):
+    def __init__(self, image_path, config=None):
         super().__init__()
         self.setWindowTitle("Image Viewer")
         self.viewer = EnhancedImageViewer(image_path)
-        self._cropping = False
-        self._start = None
+        self._crop_mode = False
+        self._last_crop = None
         self._rect_item = None
-
+        self.config = config
         btn_zoom_in = QPushButton("Zoom In")
         btn_zoom_out = QPushButton("Zoom Out")
         btn_crop = QPushButton("Crop")
         btn_copy = QPushButton("Copy Crop")
         btn_reset = QPushButton("Reset")
+        btn_paste_to_word = QPushButton("Paste into Fieldbook Word")
 
         btn_zoom_in.clicked.connect(self.viewer.zoom_in)
         btn_zoom_out.clicked.connect(self.viewer.zoom_out)
         btn_reset.clicked.connect(self.viewer.reset_view)
         btn_crop.clicked.connect(self.activate_crop)
         btn_copy.clicked.connect(self.copy_crop)
+        btn_paste_to_word.clicked.connect(self.paste_to_word)
 
         btn_layout = QHBoxLayout()
         btn_layout.addWidget(btn_zoom_in)
@@ -156,17 +200,16 @@ class ImageViewerWindow(QMainWindow):
         btn_layout.addWidget(btn_crop)
         btn_layout.addWidget(btn_copy)
         btn_layout.addWidget(btn_reset)
+        btn_layout.addWidget(btn_paste_to_word)
 
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.viewer)
         main_layout.addLayout(btn_layout)
-
         container = QWidget()
         container.setLayout(main_layout)
         self.setCentralWidget(container)
 
         self.viewer.viewport().installEventFilter(self)
-        self._crop_mode = False
 
     def activate_crop(self):
         self._crop_mode = True
@@ -180,25 +223,65 @@ class ImageViewerWindow(QMainWindow):
                     self.viewer.scene().removeItem(self._rect_item)
                     self._rect_item = None
                 return True
-            elif event.type() == event.MouseMove and self._start:
+            elif event.type() == event.MouseMove and hasattr(self, "_start") and self._start:
                 end = self.viewer.mapToScene(event.pos())
                 rect = QRectF(self._start, end).normalized()
                 if self._rect_item:
                     self.viewer.scene().removeItem(self._rect_item)
-                self._rect_item = self.viewer.scene().addRect(rect, pen=Qt.red)
+                self._rect_item = self.viewer.scene().addRect(rect, pen=QPen(Qt.red, 2))
                 return True
             elif event.type() == event.MouseButtonRelease and event.button() == Qt.LeftButton:
                 self._crop_mode = False
                 self.viewer.setCursor(Qt.ArrowCursor)
+                if self._rect_item:
+                    rect = self._rect_item.rect().toRect()
+                    cropped = self.viewer.pixmap.copy(rect)
+                    self._last_crop = cropped
+                    self._rect_item = None
                 return True
         return super().eventFilter(obj, event)
 
     def copy_crop(self):
-        if self._rect_item:
-            rect = self._rect_item.rect().toRect()
-            cropped = self.viewer.pixmap.copy(rect)
-            QApplication.clipboard().setPixmap(cropped)
+        if self._last_crop:
+            QApplication.clipboard().setPixmap(self._last_crop)
             QMessageBox.information(self, "Copied", "Cropped image copied to clipboard.")
+        else:
+            QMessageBox.warning(self, "No Crop", "No crop selected/cropped yet.")
+
+    def get_pil_image(self):
+        if self._last_crop:
+            qimg = self._last_crop.toImage()
+        else:
+            qimg = self.viewer.pixmap.toImage()
+        if qimg.isNull():
+            return None
+        buf = QBuffer()
+        buf.open(QBuffer.ReadWrite)
+        qimg.save(buf, "PNG")
+        pil_img = Image.open(io.BytesIO(buf.data()))
+        return pil_img
+
+    def paste_to_word(self):
+        pil_img = self.get_pil_image()
+        if not pil_img:
+            QMessageBox.warning(self, "Error", "No image (or cropped image) to insert.")
+            return
+        template_path = self.config.get_folder("fieldbook_template") if self.config else None
+        if not template_path or not os.path.isfile(template_path):
+            QMessageBox.warning(self, "Template", "No template loaded. Use File > Load Fieldbook Template.")
+            return
+        if (not fieldbook_doc_mgr.is_loaded()) or (fieldbook_doc_mgr.loaded_template != template_path):
+            fieldbook_doc_mgr.new_from_template(template_path)
+        fieldbook_doc_mgr.add_image(pil_img)
+        resp = QMessageBox.question(self, "Image Added",
+            "Image added to fieldbook. Add more, or save/export fieldbook now?",
+            QMessageBox.Yes | QMessageBox.No)
+        if resp == QMessageBox.No:
+            save_path, _ = QFileDialog.getSaveFileName(self, "Save Fieldbook", "", "Word Files (*.docx)")
+            if save_path:
+                fieldbook_doc_mgr.save(save_path)
+                QMessageBox.information(self, "Saved", f"Document saved: {save_path}")
+            fieldbook_doc_mgr.close()
 
 # --- Login Widget ---
 class LoginWidget(QWidget):
@@ -207,7 +290,6 @@ class LoginWidget(QWidget):
         self.db = db
         self.on_login = on_login
         self.init_ui()
-
     def init_ui(self):
         layout = QVBoxLayout()
         group = QGroupBox("Login")
@@ -224,7 +306,6 @@ class LoginWidget(QWidget):
         group.setContentsMargins(10, 10, 10, 10)
         layout.addWidget(group)
         self.setLayout(layout)
-
     def try_login(self):
         username = self.user_edit.text()
         password = self.pass_edit.text()
@@ -234,7 +315,7 @@ class LoginWidget(QWidget):
         else:
             QMessageBox.warning(self, "Login Failed", "Invalid username or password.")
 
-# --- Fieldbook/Plot Register Viewer with Search and List Below ---
+# --- Book Viewer ---
 class BookViewer(QWidget):
     def __init__(self, config, config_key, title):
         super().__init__()
@@ -243,10 +324,8 @@ class BookViewer(QWidget):
         self.title = title
         self.folder = self.config.get_folder(self.config_key)
         self.init_ui()
-
     def init_ui(self):
         main_layout = QHBoxLayout(self)
-        # Left: Search Form (top) + List of Images (bottom)
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         group = QGroupBox(self.title)
@@ -272,12 +351,9 @@ class BookViewer(QWidget):
         left_layout.addStretch()
         left_widget.setMinimumWidth(350)
         left_widget.setMaximumWidth(500)
-
-        # Right: Image Viewer
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         self.viewer = EnhancedImageViewer()
-        # Add zoom in/out and reset buttons for preview pane
         btn_zoom_in = QPushButton("Zoom In")
         btn_zoom_out = QPushButton("Zoom Out")
         btn_reset = QPushButton("Reset")
@@ -292,21 +368,17 @@ class BookViewer(QWidget):
         right_layout.addWidget(self.viewer)
         right_layout.addLayout(btn_layout)
         right_widget.setMinimumWidth(400)
-
         main_layout.addWidget(left_widget, 35)
         main_layout.addWidget(right_widget, 65)
         self.setLayout(main_layout)
-
         self.vdc_combo.currentTextChanged.connect(self.update_wards)
         self.ward_combo.currentTextChanged.connect(self.update_sheets)
         self.sheet_combo.currentTextChanged.connect(self.update_images)
         self.image_list.currentTextChanged.connect(self.load_selected_image)
         self.populate_vdcs()
-
     def set_folder(self, folder):
         self.folder = folder
         self.populate_vdcs()
-
     def populate_vdcs(self):
         self.vdc_combo.clear()
         if not self.folder or not os.path.isdir(self.folder):
@@ -316,30 +388,24 @@ class BookViewer(QWidget):
         if vdcs:
             self.vdc_combo.setCurrentIndex(0)
             self.update_wards(vdcs[0])
-
     def update_wards(self, vdc):
         self.ward_combo.clear()
         vdc_path = os.path.join(self.folder, vdc)
         if not os.path.isdir(vdc_path):
             return
-        # Sheet folders
         wards = [d for d in os.listdir(vdc_path) if os.path.isdir(os.path.join(vdc_path, d))]
         self.ward_combo.addItems(wards)
-        # Add pseudo-ward for images directly inside VDC
         direct_images = [f for f in os.listdir(vdc_path) if re.match(r"(\d+)-(\d+)\.jpe?g", f, re.IGNORECASE)]
         if direct_images:
             self.ward_combo.addItem("(No Sheet)")
         if self.ward_combo.count() > 0:
             self.ward_combo.setCurrentIndex(0)
             self.update_sheets(self.ward_combo.currentText())
-
-
     def update_sheets(self, ward):
         vdc = self.vdc_combo.currentText()
         vdc_path = os.path.join(self.folder, vdc)
         self.sheet_combo.clear()
         if ward == "(No Sheet)":
-            # No sheets for images directly in VDC
             self.update_images("(No Sheet)")
             return
         ward_path = os.path.join(vdc_path, ward)
@@ -350,13 +416,10 @@ class BookViewer(QWidget):
         if sheets:
             self.sheet_combo.setCurrentIndex(0)
             self.update_images(sheets[0])
-
-
     def update_images(self, sheet):
         vdc = self.vdc_combo.currentText()
         ward = self.ward_combo.currentText()
         self.image_list.clear()
-        # Images directly under VDC
         if ward == "(No Sheet)" or sheet == "(No Sheet)":
             vdc_path = os.path.join(self.folder, vdc)
             images = [f for f in os.listdir(vdc_path) if re.match(r"(\d+)-(\d+)\.jpe?g", f, re.IGNORECASE)]
@@ -364,7 +427,6 @@ class BookViewer(QWidget):
             if images:
                 self.image_list.setCurrentRow(0)
             return
-        # Regular path: VDC/Ward/Sheet
         sheet_path = os.path.join(self.folder, vdc, ward, sheet)
         if not os.path.isdir(sheet_path):
             return
@@ -372,8 +434,6 @@ class BookViewer(QWidget):
         self.image_list.addItems(images)
         if images:
             self.image_list.setCurrentRow(0)
-
-
     def load_selected_image(self, filename):
         vdc = self.vdc_combo.currentText()
         ward = self.ward_combo.currentText()
@@ -384,8 +444,6 @@ class BookViewer(QWidget):
             path = os.path.join(self.folder, vdc, ward, sheet, filename)
         if os.path.isfile(path):
             self.viewer.load_image(path)
-
-
     def search_image(self):
         vdc = self.vdc_combo.currentText()
         ward = self.ward_combo.currentText()
@@ -395,7 +453,6 @@ class BookViewer(QWidget):
             QMessageBox.warning(self, "Error", "Please select all fields and enter a parcel number.")
             return
         found = False
-        # Try images directly under VDC
         if ward == "(No Sheet)" or not ward:
             vdc_path = os.path.join(self.folder, vdc)
             for img in os.listdir(vdc_path):
@@ -403,21 +460,20 @@ class BookViewer(QWidget):
                 if m and int(m.group(1)) <= int(parcel) <= int(m.group(2)):
                     image_path = os.path.join(vdc_path, img)
                     found = True
-                    viewer = ImageViewerWindow(image_path)
+                    viewer = ImageViewerWindow(image_path, config=self.config)
                     viewer.show()
                     viewer.raise_()
                     viewer.activateWindow()
                     self._last_viewer = viewer
                     break
         else:
-            # Try inside selection path
             sheet_path = os.path.join(self.folder, vdc, ward, sheet)
             for img in os.listdir(sheet_path):
                 m = re.match(r"(\d+)-(\d+)\.jpe?g", img, re.IGNORECASE)
                 if m and int(m.group(1)) <= int(parcel) <= int(m.group(2)):
                     image_path = os.path.join(sheet_path, img)
                     found = True
-                    viewer = ImageViewerWindow(image_path)
+                    viewer = ImageViewerWindow(image_path, config=self.config)
                     viewer.show()
                     viewer.raise_()
                     viewer.activateWindow()
@@ -425,7 +481,6 @@ class BookViewer(QWidget):
                     break
         if not found:
             QMessageBox.warning(self, "Not Found", "Parcel not found in this location.")
-
 
 # --- Main Window ---
 class MainWindow(QMainWindow):
@@ -435,14 +490,12 @@ class MainWindow(QMainWindow):
         self.config = config
         self.setWindowTitle("Survey Office Image Manager")
         self.resize(1200, 800)
-        self.font_family = "Mangal"
         self.username = None
         self.role = None
         self.stacked = QStackedWidget()
         self.setCentralWidget(self.stacked)
         self.init_menu()
         self.show_login()
-
     def init_menu(self):
         menubar = self.menuBar()
         self.menu_file = menubar.addMenu("File")
@@ -452,12 +505,19 @@ class MainWindow(QMainWindow):
         self.action_set_plotregister = QAction("Set Plot Register Folder", self)
         self.action_set_plotregister.triggered.connect(self.set_plotregister_folder)
         self.menu_file.addAction(self.action_set_plotregister)
+        self.action_load_template = QAction("Load Fieldbook Template", self)
+        self.action_load_template.triggered.connect(self.load_fieldbook_template)
+        self.menu_file.addAction(self.action_load_template)
         self.menu_file.addSeparator()
         self.action_logout = QAction("Logout", self)
         self.action_logout.triggered.connect(self.logout)
         self.menu_file.addAction(self.action_logout)
         self.menu_file.setEnabled(False)
-
+    def load_fieldbook_template(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Fieldbook Template", "", "Word Files (*.docx)")
+        if file_path:
+            self.config.set_folder("fieldbook_template", file_path)
+            QMessageBox.information(self, "Template Loaded", "Template loaded successfully.")
     def show_login(self):
         self.menu_file.setEnabled(False)
         while self.stacked.count() > 0:
@@ -467,13 +527,11 @@ class MainWindow(QMainWindow):
         self.login_widget = LoginWidget(self.db, self.on_login)
         self.stacked.addWidget(self.login_widget)
         self.stacked.setCurrentWidget(self.login_widget)
-
     def on_login(self, username, role):
         self.username = username
         self.role = role
         self.menu_file.setEnabled(True)
         self.show_home()
-
     def show_home(self):
         home = QWidget()
         layout = QVBoxLayout(home)
@@ -496,7 +554,6 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         self.stacked.addWidget(home)
         self.stacked.setCurrentWidget(home)
-
     def show_fieldbook(self):
         folder = self.config.get_folder("fieldbook_folder")
         if not folder or not os.path.isdir(folder):
@@ -505,7 +562,6 @@ class MainWindow(QMainWindow):
         self.fieldbook_viewer = BookViewer(self.config, "fieldbook_folder", "Fieldbook Viewer")
         self.stacked.addWidget(self.fieldbook_viewer)
         self.stacked.setCurrentWidget(self.fieldbook_viewer)
-
     def show_plotregister(self):
         folder = self.config.get_folder("plotregister_folder")
         if not folder or not os.path.isdir(folder):
@@ -514,19 +570,16 @@ class MainWindow(QMainWindow):
         self.plotregister_viewer = BookViewer(self.config, "plotregister_folder", "Plot Register Viewer")
         self.stacked.addWidget(self.plotregister_viewer)
         self.stacked.setCurrentWidget(self.plotregister_viewer)
-
     def set_fieldbook_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Fieldbook Root Directory", os.getcwd())
         if folder:
             self.config.set_folder("fieldbook_folder", folder)
             QMessageBox.information(self, "Folder Set", "Fieldbook folder set successfully.")
-
     def set_plotregister_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Plot Register Root Directory", os.getcwd())
         if folder:
             self.config.set_folder("plotregister_folder", folder)
             QMessageBox.information(self, "Folder Set", "Plot Register folder set successfully.")
-
     def logout(self):
         self.username = None
         self.role = None
@@ -536,7 +589,6 @@ class MainWindow(QMainWindow):
             widget.deleteLater()
         self.show_login()
 
-# --- Main Entry Point ---
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
