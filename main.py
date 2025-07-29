@@ -8,6 +8,10 @@ from datetime import datetime
 from docx.shared import Pt
 from docx.oxml.ns import qn
 from docx.shared import Inches
+import subprocess
+import fitz  # PyMuPDF
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QScrollArea, QWidget
+from PyQt5.QtGui import QPixmap, QImage
 
 
 
@@ -23,6 +27,68 @@ from docx import Document
 
 
 # --- Dialog for doc footer info ---
+def convert_docx_to_pdf(docx_path, pdf_path):
+    if sys.platform.startswith('win'):
+        # On Windows, use docx2pdf
+        from docx2pdf import convert  # pip install docx2pdf, if not present
+        convert(docx_path, pdf_path)
+    else:
+        # On Linux or macOS, use libreoffice
+        subprocess.run([
+            'libreoffice', '--headless', '--convert-to', 'pdf', docx_path, '--outdir', os.path.dirname(pdf_path)
+        ], check=True)
+        pdf_generated = os.path.join(os.path.dirname(pdf_path), os.path.splitext(os.path.basename(docx_path))[0] + ".pdf")
+        if pdf_generated != pdf_path and os.path.exists(pdf_generated):
+            os.rename(pdf_generated, pdf_path)
+        if not os.path.exists(pdf_path):
+            raise RuntimeError("PDF was not generated. Check if LibreOffice is installed and in PATH.")
+
+class PDFPreviewDialog(QDialog):
+    def __init__(self, pdf_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Print Preview")
+        layout = QVBoxLayout(self)
+        self.scroll_area = QScrollArea()
+        widget = QWidget()
+        vbox = QVBoxLayout(widget)
+
+        doc = fitz.open(pdf_path)
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap(dpi=120)
+            img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGBA8888)
+            label = QLabel()
+            label.setPixmap(QPixmap.fromImage(img))
+            vbox.addWidget(label)
+        
+        widget.setLayout(vbox)
+        self.scroll_area.setWidget(widget)
+        self.scroll_area.setWidgetResizable(True)
+        layout.addWidget(self.scroll_area)
+        
+        btn_layout = QHBoxLayout()
+        self.print_btn = QPushButton("Print")
+        self.exit_btn = QPushButton("Exit")
+        btn_layout.addWidget(self.print_btn)
+        btn_layout.addWidget(self.exit_btn)
+        layout.addLayout(btn_layout)
+
+        self.exit_btn.clicked.connect(self.reject)
+        self.print_btn.clicked.connect(lambda: self.print_pdf(pdf_path))
+
+    def print_pdf(self, pdf_path):
+        import platform
+        try:
+            if platform.system() == "Windows":
+                os.startfile(pdf_path, "print")
+            elif platform.system() == "Darwin":
+                subprocess.run(["open", "-a", "Preview", pdf_path])
+            else:
+                subprocess.run(["lp", pdf_path])  # Linux
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Print Error", f"Could not print: {str(e)}")
+
 class FieldbookBottomTextDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -638,60 +704,56 @@ class BookViewer(QWidget):
             QMessageBox.information(self, "Saved", f"Document saved: {save_path}\nFieldbook cleared.")
             fieldbook_doc_mgr.close()
 
+    def convert_docx_to_pdf(docx_path, pdf_path):
+        if sys.platform.startswith('win'):
+            from docx2pdf import convert
+            convert(docx_path, pdf_path)
+        else:
+            # Assumes LibreOffice with unoconv
+            subprocess.run(['libreoffice', '--headless', '--convert-to', 'pdf', docx_path, '--outdir', os.path.dirname(pdf_path)], check=True)
+            if not os.path.exists(pdf_path):
+                raise RuntimeError("PDF not generated.")
+
     def print_fieldbook(self):
+        import os
+        import sys
+        from tempfile import NamedTemporaryFile
+        from PyQt5.QtWidgets import QMessageBox, QDialog
+
         if not fieldbook_doc_mgr.is_loaded():
             QMessageBox.information(self, "No Fieldbook", "There is no active fieldbook to print.")
             return
-        # Prompt for footer info if missing
-        if not fieldbook_doc_mgr.footer_info:
+
+        # Prompt for footer info if not already set
+        if not getattr(fieldbook_doc_mgr, "footer_info", None):
             dlg = FieldbookBottomTextDialog(self)
             if dlg.exec_() == QDialog.Accepted:
                 info = dlg.get_values()
                 fieldbook_doc_mgr.footer_info = info
             else:
-                return  # User cancelled
+                return  # User cancelled; don't continue
 
-        from tempfile import NamedTemporaryFile
-        import subprocess
-        import platform
-
+        # Save to temp DOCX, ensuring footer info is included
         with NamedTemporaryFile(suffix='.docx', delete=False) as tf:
-            temp_path = tf.name
-            fieldbook_doc_mgr.save(temp_path)
+            temp_docx_path = tf.name
+            fieldbook_doc_mgr.save(temp_docx_path)  # save() should embed footer_info
 
-        # 2. Preview: Open the DOCX in Word (or default application)
-        reply = QMessageBox.question(
-            self, "Print Preview",
-            "Print preview will open in your system's Word processor.\nDo you want to continue?",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        if reply != QMessageBox.Yes:
+        # Open docx in default application for preview/print
+        try:
+            if sys.platform.startswith("darwin"):
+                os.system(f'open "{temp_docx_path}"')
+            elif os.name == "nt":
+                os.startfile(temp_docx_path)
+            elif sys.platform.startswith("linux"):
+                os.system(f'xdg-open "{temp_docx_path}"')
+            else:
+                raise OSError("Unsupported OS for auto-open")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not open DOCX for preview: {e}")
             return
 
-        try:
-            if platform.system() == "Windows":
-                os.startfile(temp_path)
-            elif platform.system() == "Darwin":
-                subprocess.run(["open", "-a", "Microsoft Word", temp_path])
-            else:  # Linux/uploader
-                subprocess.run(["libreoffice", temp_path])
 
-            # Ask to print after preview
-            print_reply = QMessageBox.question(
-                self, "Print",
-                "Do you want to print this document now?",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if print_reply == QMessageBox.Yes:
-                if platform.system() == "Windows":
-                    os.startfile(temp_path, "print")
-                elif platform.system() == "Darwin":
-                    subprocess.run(["open", "-a", "Microsoft Word", temp_path])  # macOS print is manual
-                else:
-                    subprocess.run(["libreoffice", "--pt", temp_path])
-                QMessageBox.information(self, "Print", "Print command sent. Check your printer dialog.")
-        except Exception as e:
-            QMessageBox.warning(self, "Print Error", f"Could not open/print automatically.\nError: {str(e)}\nOpen and print the saved DOCX file manually.")
+
 
 # ---- Main Window ----
 class MainWindow(QMainWindow):
