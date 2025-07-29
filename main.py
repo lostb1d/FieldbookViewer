@@ -124,8 +124,12 @@ class FieldbookDocManager:
         p2 = footer.add_paragraph()
         p2.text = sigs
         p2.alignment = 1
+        
     def add_image(self, pil_img, vdc, ward, sheet, parcel):
-        # DO NOT overlay metadata, just insert image as-is
+        # Add a metadata paragraph above every image
+        meta_text = f"गा.वि.स: {vdc} | वडा नं: {ward} | सिट: {sheet} | कित्ता नं: {parcel}"
+        self.doc.add_paragraph(meta_text, style=None)  # Add metadata above the image
+
         avail_width = self.section.page_width - self.section.left_margin - self.section.right_margin
         temp_io = io.BytesIO()
         pil_img.save(temp_io, format="PNG")
@@ -134,8 +138,9 @@ class FieldbookDocManager:
             self.doc.add_page_break()
             self.images_on_page = 0
         self.doc.add_picture(temp_io, width=avail_width)
-        self.doc.add_paragraph("")
+        self.doc.add_paragraph("")  # Space after image if desired
         self.images_on_page += 1
+
     def save(self, path):
         if self.footer_info is not None:
             self.insert_footer_to_all_pages(self.footer_info)
