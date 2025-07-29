@@ -430,6 +430,7 @@ class LoginWidget(QWidget):
         group.setContentsMargins(10, 10, 10, 10)
         layout.addWidget(group)
         self.setLayout(layout)
+        
     def try_login(self):
         username = self.user_edit.text()
         password = self.pass_edit.text()
@@ -475,7 +476,18 @@ class BookViewer(QWidget):
         self.finalize_btn = QPushButton("Finalize & Save Fieldbook")
         self.finalize_btn.setMinimumHeight(36)
         self.finalize_btn.clicked.connect(self.finalize_fieldbook)
-        left_layout.addWidget(self.finalize_btn)
+        # left_layout.addWidget(self.finalize_btn)
+
+        self.print_btn = QPushButton("Print Fieldbook")
+        self.print_btn.setMinimumHeight(36)
+        self.print_btn.clicked.connect(self.print_fieldbook)
+
+        btn_box = QHBoxLayout()
+        btn_box.addWidget(self.finalize_btn)
+        btn_box.addWidget(self.print_btn)
+        left_layout.addLayout(btn_box)
+
+
         left_layout.addStretch()
         left_widget.setMinimumWidth(350)
         left_widget.setMaximumWidth(500)
@@ -625,6 +637,61 @@ class BookViewer(QWidget):
             fieldbook_doc_mgr.save(save_path)
             QMessageBox.information(self, "Saved", f"Document saved: {save_path}\nFieldbook cleared.")
             fieldbook_doc_mgr.close()
+
+    def print_fieldbook(self):
+        if not fieldbook_doc_mgr.is_loaded():
+            QMessageBox.information(self, "No Fieldbook", "There is no active fieldbook to print.")
+            return
+        # Prompt for footer info if missing
+        if not fieldbook_doc_mgr.footer_info:
+            dlg = FieldbookBottomTextDialog(self)
+            if dlg.exec_() == QDialog.Accepted:
+                info = dlg.get_values()
+                fieldbook_doc_mgr.footer_info = info
+            else:
+                return  # User cancelled
+
+        from tempfile import NamedTemporaryFile
+        import subprocess
+        import platform
+
+        with NamedTemporaryFile(suffix='.docx', delete=False) as tf:
+            temp_path = tf.name
+            fieldbook_doc_mgr.save(temp_path)
+
+        # 2. Preview: Open the DOCX in Word (or default application)
+        reply = QMessageBox.question(
+            self, "Print Preview",
+            "Print preview will open in your system's Word processor.\nDo you want to continue?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            if platform.system() == "Windows":
+                os.startfile(temp_path)
+            elif platform.system() == "Darwin":
+                subprocess.run(["open", "-a", "Microsoft Word", temp_path])
+            else:  # Linux/uploader
+                subprocess.run(["libreoffice", temp_path])
+
+            # Ask to print after preview
+            print_reply = QMessageBox.question(
+                self, "Print",
+                "Do you want to print this document now?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if print_reply == QMessageBox.Yes:
+                if platform.system() == "Windows":
+                    os.startfile(temp_path, "print")
+                elif platform.system() == "Darwin":
+                    subprocess.run(["open", "-a", "Microsoft Word", temp_path])  # macOS print is manual
+                else:
+                    subprocess.run(["libreoffice", "--pt", temp_path])
+                QMessageBox.information(self, "Print", "Print command sent. Check your printer dialog.")
+        except Exception as e:
+            QMessageBox.warning(self, "Print Error", f"Could not open/print automatically.\nError: {str(e)}\nOpen and print the saved DOCX file manually.")
 
 # ---- Main Window ----
 class MainWindow(QMainWindow):
