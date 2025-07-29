@@ -94,7 +94,7 @@ def overlay_metadata(pil_img, vdc, ward, sheet, parcel):
         font = ImageFont.truetype("arial.ttf", font_size)
     except:
         font = ImageFont.load_default()
-    meta_text = f"VDC: {vdc} | Ward: {ward} | Sheet: {sheet} | Parcel: {parcel}"
+    meta_text = f"गाविस: {vdc} | वडा नं: {ward} | सिट: {sheet} | कित्ता नं: {parcel}"
     date_str = datetime.now().strftime("%Y-%m-%d")
     try:
         meta_h = draw.textbbox((0,0), meta_text, font=font)[3] + 20
