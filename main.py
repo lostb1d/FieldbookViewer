@@ -5,6 +5,9 @@ import sqlite3
 import json
 import io
 from datetime import datetime
+from docx.shared import Pt
+from docx.oxml.ns import qn
+
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -15,6 +18,7 @@ from PyQt5.QtGui import QPixmap, QIntValidator, QIcon, QPalette, QPainter, QPen,
 from PyQt5.QtCore import Qt, QRectF, QPoint, QBuffer
 from PIL import Image
 from docx import Document
+
 
 # --- Dialog for doc footer info ---
 class FieldbookBottomTextDialog(QDialog):
@@ -85,6 +89,12 @@ class UserDB:
         return row[0] if row else None
 
 # --- Fieldbook Word Document Manager ---
+
+def to_nepali_number(num):
+    num_map = str.maketrans('0123456789', '०१२३४५६७८९')
+    return str(num).translate(num_map)
+
+
 class FieldbookDocManager:
     def __init__(self):
         self.doc = None
@@ -124,11 +134,20 @@ class FieldbookDocManager:
         p2 = footer.add_paragraph()
         p2.text = sigs
         p2.alignment = 1
-        
+
     def add_image(self, pil_img, vdc, ward, sheet, parcel):
-        # Add a metadata paragraph above every image
-        meta_text = f"गा.वि.स: {vdc} | वडा नं: {ward} | सिट: {sheet} | कित्ता नं: {parcel}"
-        self.doc.add_paragraph(meta_text, style=None)  # Add metadata above the image
+        # Convert all numbers to Nepali
+        def nep(txt): return to_nepali_number(txt) if txt else ''
+        meta_text = (
+            f"गा.वि.स: {vdc} | वडा नं: {nep(ward)} | सिट: {nep(sheet)} | कित्ता नं: {nep(parcel)}"
+        )
+        p = self.doc.add_paragraph()
+        run = p.add_run(meta_text)
+        run.font.bold = True
+        run.font.size = Pt(14)
+        run.font.name = "Kalimati"
+        r = run._element
+        r.rPr.rFonts.set(qn('w:eastAsia'), 'Kalimati')
 
         avail_width = self.section.page_width - self.section.left_margin - self.section.right_margin
         temp_io = io.BytesIO()
@@ -138,8 +157,9 @@ class FieldbookDocManager:
             self.doc.add_page_break()
             self.images_on_page = 0
         self.doc.add_picture(temp_io, width=avail_width)
-        self.doc.add_paragraph("")  # Space after image if desired
+        self.doc.add_paragraph("")  # Optionally add space after image
         self.images_on_page += 1
+
 
     def save(self, path):
         if self.footer_info is not None:
