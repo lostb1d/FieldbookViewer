@@ -7,6 +7,8 @@ import io
 from datetime import datetime
 from docx.shared import Pt
 from docx.oxml.ns import qn
+from docx.shared import Inches
+
 
 
 from PyQt5.QtWidgets import (
@@ -115,25 +117,54 @@ class FieldbookDocManager:
             val = info.get(k, "")
             return val if val else dots
         return (
-            f"{safe('patra_pathaune','....................')} को च.नं. {safe('chan_dan','.......')} मिति {safe('miti','.............')} "
+            f"श्री {safe('patra_pathaune','....................')} को च.नं./द.नं. {safe('chan_dan','.......')} मिति {safe('miti','.............')} "
             f"को पत्रानुसार {safe('prayojan','...............')} प्रयोजनको लागि  "
             f"रसिद नं {safe('rasid_no','.....................')} बाट राजश्व लिई कम्प्युटरबाट फिल्डबुक प्रतिलिपि उतार गरि पठाइएको व्यहोरा अनुरोध छ ।"
         )
     def insert_footer_to_all_pages(self, footer_info):
+        from docx.shared import Pt
+        from docx.oxml.ns import qn
+
         self.footer_info = footer_info
         section = self.doc.sections[0]
         footer = section.footer
+        # Clear existing paragraphs
         for para in footer.paragraphs[:]:
             p = para._element
             footer._element.remove(p)
+
+        # Footer text paragraph
         p1 = footer.add_paragraph()
-        p1.text = self.get_footer_line()
-        p1.alignment = 1
-        gap = " " * 18
-        sigs = f"प्रिन्ट गर्ने{gap}रुजु गर्ने{gap}प्रमाणित गर्ने"
-        p2 = footer.add_paragraph()
-        p2.text = sigs
-        p2.alignment = 1
+        run1 = p1.add_run(self.get_footer_line())
+        run1.font.size = Pt(10)
+        run1.font.name = "Kalimati"
+        run1._element.rPr.rFonts.set(qn('w:eastAsia'), 'Kalimati')
+        p1.alignment = 1  # Center
+
+        # Single-row three-column table for signatures
+        table = footer.add_table(rows=1, cols=3, width=section.page_width - section.left_margin - section.right_margin)
+        table.allow_autofit = True
+        # Set each cell's content and style
+        cell_texts = ["प्रिन्ट गर्ने", "रुजु गर्ने", "प्रमाणित गर्ने"]
+        aligns = [0, 1, 2]  # left, center, right
+
+        for i, text in enumerate(cell_texts):
+            cell = table.cell(0, i)
+            p = cell.paragraphs[0]
+            run = p.add_run(text)
+            run.font.size = Pt(10)
+            run.font.name = "Kalimati"
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Kalimati')
+            p.alignment = aligns[i]
+
+        # Remove table borders
+        tbl = table._tbl
+        for cell in tbl.iter():
+            if cell.tag.endswith('tcBorders'):
+                cell.getparent().remove(cell)
+        
+        # Set footer margin distance
+        section.footer_distance = Pt(5)
 
     def add_image(self, pil_img, vdc, ward, sheet, parcel):
         # Convert all numbers to Nepali
@@ -144,7 +175,7 @@ class FieldbookDocManager:
         p = self.doc.add_paragraph()
         run = p.add_run(meta_text)
         run.font.bold = True
-        run.font.size = Pt(14)
+        run.font.size = Pt(10)
         run.font.name = "Kalimati"
         r = run._element
         r.rPr.rFonts.set(qn('w:eastAsia'), 'Kalimati')
@@ -157,7 +188,7 @@ class FieldbookDocManager:
             self.doc.add_page_break()
             self.images_on_page = 0
         self.doc.add_picture(temp_io, width=avail_width)
-        self.doc.add_paragraph("")  # Optionally add space after image
+        # self.doc.add_paragraph("")  # Optionally add space after image
         self.images_on_page += 1
 
 
@@ -166,8 +197,10 @@ class FieldbookDocManager:
             self.insert_footer_to_all_pages(self.footer_info)
         if self.doc:
             self.doc.save(path)
+
     def is_loaded(self):
         return self.doc is not None
+
     def close(self):
         self.doc = None
         self.section = None
