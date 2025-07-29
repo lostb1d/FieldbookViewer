@@ -9,13 +9,12 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QFileDialog, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QMessageBox, QFormLayout, QGroupBox, QAction, QListWidget, QStackedWidget
+    QMessageBox, QFormLayout, QGroupBox, QAction, QListWidget, QStackedWidget, QDialog, QScrollArea
 )
-from PyQt5.QtGui import QPixmap, QIntValidator, QIcon, QPalette, QPainter, QPen
+from PyQt5.QtGui import QPixmap, QIntValidator, QIcon, QPalette, QPainter, QPen, QImage
 from PyQt5.QtCore import Qt, QRectF, QPoint, QBuffer
 from PIL import Image, ImageDraw, ImageFont
 from docx import Document
-from docx.shared import Inches
 
 # --- Config Helper ---
 class Config:
@@ -76,35 +75,7 @@ class FieldbookDocManager:
         self.images_on_page = 0
 
     def add_image(self, pil_img, vdc, ward, sheet, parcel):
-        # Draw overlays before insertion
-        pil_img = pil_img.convert("RGBA")
-        draw = ImageDraw.Draw(pil_img)
-        width, height = pil_img.size
-
-        # Font setup. Try a TTF if available; fallback to PIL default
-        font_size = 32
-        try:
-            font = ImageFont.truetype("arial.ttf", font_size)
-        except:
-            font = ImageFont.load_default()
-
-        # Compose meta string and date string
-        meta_text = f"VDC: {vdc} | Ward: {ward} | Sheet: {sheet} | Parcel: {parcel}"
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        meta_h = draw.textbbox((0,0), meta_text, font=font)[3]+20
-        date_w = draw.textbbox((0,0), date_str, font=font)[2]
-        topbar_h = meta_h
-
-        # Draw top bar (white rectangle with transparency, if supported)
-        barcolor = (255, 255, 255, 220) if pil_img.mode=='RGBA' else (255,255,255)
-        draw.rectangle([(0, 0), (width, topbar_h)], fill=barcolor)
-
-        # Draw metadata left
-        draw.text((10, 10), meta_text, fill=(0, 0, 0), font=font)
-        # Draw date right
-        draw.text((width - date_w - 10, 10), date_str, fill=(0,0,0), font=font)
-        pil_img = pil_img.convert("RGB")
-
+        pil_img = overlay_metadata(pil_img, vdc, ward, sheet, parcel)
         avail_width = self.section.page_width - self.section.left_margin - self.section.right_margin
         temp_io = io.BytesIO()
         pil_img.save(temp_io, format="PNG")
@@ -128,6 +99,30 @@ class FieldbookDocManager:
         self.images_on_page = 0
 
 fieldbook_doc_mgr = FieldbookDocManager()  # global for this session
+
+def overlay_metadata(pil_img, vdc, ward, sheet, parcel):
+    pil_img = pil_img.convert("RGBA")
+    draw = ImageDraw.Draw(pil_img)
+    width, height = pil_img.size
+    font_size = 32
+    try:
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except:
+        font = ImageFont.load_default()
+    meta_text = f"VDC: {vdc} | Ward: {ward} | Sheet: {sheet} | Parcel: {parcel}"
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    try:
+        meta_h = draw.textbbox((0,0), meta_text, font=font)[3]+20
+        date_w = draw.textbbox((0,0), date_str, font=font)[2]
+    except Exception:
+        meta_h = 40
+        date_w = 120
+    topbar_h = meta_h
+    barcolor = (255, 255, 255, 220) if pil_img.mode=='RGBA' else (255,255,255)
+    draw.rectangle([(0, 0), (width, topbar_h)], fill=barcolor)
+    draw.text((10, 10), meta_text, fill=(0, 0, 0), font=font)
+    draw.text((width - date_w - 10, 10), date_str, fill=(0,0,0), font=font)
+    return pil_img.convert("RGB")
 
 # --- Enhanced Image Viewer ---
 class EnhancedImageViewer(QGraphicsView):
@@ -194,7 +189,7 @@ class EnhancedImageViewer(QGraphicsView):
         self.resetTransform()
         self._zoom = 1.0
 
-# --- Image Viewer Window with Crop, Clipboard and Fieldbook Integration ---
+# --- Image Viewer Window with Crop, Clipboard, Fieldbook & Print Preview ---
 class ImageViewerWindow(QMainWindow):
     def __init__(self, image_path, config=None, meta=None):
         super().__init__()
@@ -204,7 +199,7 @@ class ImageViewerWindow(QMainWindow):
         self._last_crop = None
         self._rect_item = None
         self.config = config
-        self.meta = meta or {}  # {"vdc": ...,"ward":...,"sheet":...,"parcel":...}
+        self.meta = meta or {}
 
         btn_zoom_in = QPushButton("Zoom In")
         btn_zoom_out = QPushButton("Zoom Out")
@@ -212,6 +207,7 @@ class ImageViewerWindow(QMainWindow):
         btn_copy = QPushButton("Copy Crop")
         btn_reset = QPushButton("Reset")
         btn_paste_to_word = QPushButton("Paste into Fieldbook Word")
+        btn_preview_print = QPushButton("Print Preview")
 
         btn_zoom_in.clicked.connect(self.viewer.zoom_in)
         btn_zoom_out.clicked.connect(self.viewer.zoom_out)
@@ -219,6 +215,7 @@ class ImageViewerWindow(QMainWindow):
         btn_crop.clicked.connect(self.activate_crop)
         btn_copy.clicked.connect(self.copy_crop)
         btn_paste_to_word.clicked.connect(self.paste_to_word)
+        btn_preview_print.clicked.connect(self.preview_print)
 
         btn_layout = QHBoxLayout()
         btn_layout.addWidget(btn_zoom_in)
@@ -227,6 +224,7 @@ class ImageViewerWindow(QMainWindow):
         btn_layout.addWidget(btn_copy)
         btn_layout.addWidget(btn_reset)
         btn_layout.addWidget(btn_paste_to_word)
+        btn_layout.addWidget(btn_preview_print)
 
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.viewer)
@@ -275,7 +273,6 @@ class ImageViewerWindow(QMainWindow):
             QMessageBox.warning(self, "No Crop", "No crop selected/cropped yet.")
 
     def get_pil_image(self):
-        # Always get as PIL, from cropped or full image
         if self._last_crop:
             qimg = self._last_crop.toImage()
         else:
@@ -297,24 +294,43 @@ class ImageViewerWindow(QMainWindow):
         if not template_path or not os.path.isfile(template_path):
             QMessageBox.warning(self, "Template", "No template loaded. Use File > Load Fieldbook Template.")
             return
-        # Setup document if needed
         if (not fieldbook_doc_mgr.is_loaded()) or (fieldbook_doc_mgr.loaded_template != template_path):
             fieldbook_doc_mgr.new_from_template(template_path)
-        # Draw required metadata overlays in add_image
         vdc = self.meta.get("vdc", "")
         ward = self.meta.get("ward", "")
         sheet = self.meta.get("sheet", "")
         parcel = self.meta.get("parcel", "")
         fieldbook_doc_mgr.add_image(pil_img, vdc, ward, sheet, parcel)
-        resp = QMessageBox.question(self, "Image Added",
-            "Image added to fieldbook. Add more, or save/export fieldbook now?",
-            QMessageBox.Yes | QMessageBox.No)
-        if resp == QMessageBox.No:
-            save_path, _ = QFileDialog.getSaveFileName(self, "Save Fieldbook", "", "Word Files (*.docx)")
-            if save_path:
-                fieldbook_doc_mgr.save(save_path)
-                QMessageBox.information(self, "Saved", f"Document saved: {save_path}")
-            fieldbook_doc_mgr.close()
+        QMessageBox.information(self, "Image Added",
+            "Image added to Fieldbook. You can finalize and save from the button below image list when you're done.")
+
+    def preview_print(self):
+        pil_img = self.get_pil_image()
+        if not pil_img:
+            QMessageBox.warning(self, "Error", "No image to preview.")
+            return
+        vdc = self.meta.get("vdc", "")
+        ward = self.meta.get("ward", "")
+        sheet = self.meta.get("sheet", "")
+        parcel = self.meta.get("parcel", "")
+        preview_img = overlay_metadata(pil_img, vdc, ward, sheet, parcel)
+        buf = io.BytesIO()
+        preview_img.save(buf, format="PNG")
+        qt_img = QImage.fromData(buf.getvalue())
+        pixmap = QPixmap.fromImage(qt_img)
+        label = QLabel()
+        label.setPixmap(pixmap)
+        label.setScaledContents(True)
+        label.setMinimumSize(min(pixmap.width(), 800), min(pixmap.height(), 1000))
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Print Preview")
+        layout = QVBoxLayout(dlg)
+        scroll = QScrollArea()
+        scroll.setWidget(label)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll)
+        dlg.resize(900, 1100)
+        dlg.exec_()
 
 # --- Login Widget ---
 class LoginWidget(QWidget):
@@ -323,7 +339,6 @@ class LoginWidget(QWidget):
         self.db = db
         self.on_login = on_login
         self.init_ui()
-
     def init_ui(self):
         layout = QVBoxLayout()
         group = QGroupBox("Login")
@@ -340,7 +355,6 @@ class LoginWidget(QWidget):
         group.setContentsMargins(10, 10, 10, 10)
         layout.addWidget(group)
         self.setLayout(layout)
-
     def try_login(self):
         username = self.user_edit.text()
         password = self.pass_edit.text()
@@ -359,7 +373,6 @@ class BookViewer(QWidget):
         self.title = title
         self.folder = self.config.get_folder(self.config_key)
         self.init_ui()
-
     def init_ui(self):
         main_layout = QHBoxLayout(self)
         left_widget = QWidget()
@@ -384,6 +397,11 @@ class BookViewer(QWidget):
         self.image_list = QListWidget()
         left_layout.addWidget(QLabel("Available Images:"))
         left_layout.addWidget(self.image_list)
+
+        self.finalize_btn = QPushButton("Finalize & Save Fieldbook")
+        self.finalize_btn.setMinimumHeight(36)
+        self.finalize_btn.clicked.connect(self.finalize_fieldbook)
+        left_layout.addWidget(self.finalize_btn)  # <-- NEW
         left_layout.addStretch()
         left_widget.setMinimumWidth(350)
         left_widget.setMaximumWidth(500)
@@ -412,7 +430,6 @@ class BookViewer(QWidget):
         self.sheet_combo.currentTextChanged.connect(self.update_images)
         self.image_list.currentTextChanged.connect(self.load_selected_image)
         self.populate_vdcs()
-
     def set_folder(self, folder):
         self.folder = folder
         self.populate_vdcs()
@@ -525,6 +542,17 @@ class BookViewer(QWidget):
         if not found:
             QMessageBox.warning(self, "Not Found", "Parcel not found in this location.")
 
+    # --- NEW: Finalize & Save in panel ---
+    def finalize_fieldbook(self):
+        if not fieldbook_doc_mgr.is_loaded():
+            QMessageBox.information(self, "No Fieldbook", "There is no active fieldbook to save.")
+            return
+        save_path, _ = QFileDialog.getSaveFileName(self, "Save Fieldbook", "", "Word Files (*.docx)")
+        if save_path:
+            fieldbook_doc_mgr.save(save_path)
+            QMessageBox.information(self, "Saved", f"Document saved: {save_path}\nFieldbook cleared.")
+            fieldbook_doc_mgr.close()
+
 # --- Main Window ---
 class MainWindow(QMainWindow):
     def __init__(self, db, config):
@@ -551,6 +579,10 @@ class MainWindow(QMainWindow):
         self.action_load_template = QAction("Load Fieldbook Template", self)
         self.action_load_template.triggered.connect(self.load_fieldbook_template)
         self.menu_file.addAction(self.action_load_template)
+        self.menu_file.addSeparator()
+        self.action_print_fieldbook = QAction("Print Fieldbook", self)
+        self.action_print_fieldbook.triggered.connect(self.print_fieldbook)
+        self.menu_file.addAction(self.action_print_fieldbook)
         self.menu_file.addSeparator()
         self.action_logout = QAction("Logout", self)
         self.action_logout.triggered.connect(self.logout)
@@ -623,6 +655,28 @@ class MainWindow(QMainWindow):
         if folder:
             self.config.set_folder("plotregister_folder", folder)
             QMessageBox.information(self, "Folder Set", "Plot Register folder set successfully.")
+
+    def print_fieldbook(self):
+        import subprocess
+        import platform
+        if not fieldbook_doc_mgr.is_loaded():
+            QMessageBox.information(self, "No Fieldbook", "Please finalize & save the fieldbook document first (use 'Finalize' button below images list).")
+            return
+        from tempfile import NamedTemporaryFile
+        with NamedTemporaryFile(suffix='.docx', delete=False) as tf:
+            temp_path = tf.name
+            fieldbook_doc_mgr.save(temp_path)
+        try:
+            if platform.system() == "Windows":
+                os.startfile(temp_path, "print")
+            elif platform.system() == "Darwin":
+                subprocess.run(["open", "-a", "Microsoft Word", temp_path])
+            else:
+                subprocess.run(["libreoffice", "--pt", temp_path])
+            QMessageBox.information(self, "Print", "Print dialog has been opened in your system's Word processor.\nPlease print from there.")
+        except Exception as e:
+            QMessageBox.warning(self, "Print Error", f"Could not open print dialog automatically.\nError: {str(e)}\nYou can open and print the saved DOCX file manually.")
+
     def logout(self):
         self.username = None
         self.role = None
