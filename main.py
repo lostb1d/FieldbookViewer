@@ -5,18 +5,43 @@ import sqlite3
 import json
 import io
 from datetime import datetime
-
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QFileDialog, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QMessageBox, QFormLayout, QGroupBox, QAction, QListWidget, QStackedWidget, QDialog, QScrollArea
+    QMessageBox, QFormLayout, QGroupBox, QAction, QListWidget, QStackedWidget,
+    QDialog, QScrollArea
 )
 from PyQt5.QtGui import QPixmap, QIntValidator, QIcon, QPalette, QPainter, QPen, QImage
 from PyQt5.QtCore import Qt, QRectF, QPoint, QBuffer
 from PIL import Image, ImageDraw, ImageFont
 from docx import Document
 
-# --- Config Helper ---
+# ---------------- Footer input dialog ----------------
+class FieldbookBottomTextDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Fieldbook Footer Details")
+        self.inputs = {}
+        form = QFormLayout()
+        self.inputs["patra_pathaune"] = QLineEdit()
+        form.addRow("पत्र पठाउने :", self.inputs["patra_pathaune"])
+        self.inputs["chan_dan"] = QLineEdit()
+        form.addRow("च.नं./द.नं. :", self.inputs["chan_dan"])
+        self.inputs["miti"] = QLineEdit()
+        form.addRow("मिति :", self.inputs["miti"])
+        self.inputs["prayojan"] = QLineEdit()
+        form.addRow("प्रयोजन :", self.inputs["prayojan"])
+        self.inputs["rasid_no"] = QLineEdit()
+        form.addRow("रसिद नं :", self.inputs["rasid_no"])
+        button = QPushButton("OK")
+        button.clicked.connect(self.accept)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(button)
+    def get_values(self):
+        return {k: field.text().strip() for k, field in self.inputs.items()}
+
+# ---------------- Config Helper ----------------
 class Config:
     def __init__(self, path="config.json"):
         self.path = path
@@ -37,7 +62,7 @@ class Config:
         self.data[key] = folder
         self.save()
 
-# --- Database Helper ---
+# ----------------- Database Helper ------------------
 class UserDB:
     def __init__(self, db_path="users.db"):
         self.conn = sqlite3.connect(db_path)
@@ -59,47 +84,7 @@ class UserDB:
         row = cur.fetchone()
         return row[0] if row else None
 
-# --- Fieldbook DOCX Manager (session-wide singleton) ---
-class FieldbookDocManager:
-    def __init__(self):
-        self.doc = None
-        self.section = None
-        self.images_on_page = 0
-        self.max_images_per_page = 3
-        self.loaded_template = None
-
-    def new_from_template(self, template_path):
-        self.doc = Document(template_path)
-        self.loaded_template = template_path
-        self.section = self.doc.sections[0]
-        self.images_on_page = 0
-
-    def add_image(self, pil_img, vdc, ward, sheet, parcel):
-        pil_img = overlay_metadata(pil_img, vdc, ward, sheet, parcel)
-        avail_width = self.section.page_width - self.section.left_margin - self.section.right_margin
-        temp_io = io.BytesIO()
-        pil_img.save(temp_io, format="PNG")
-        temp_io.seek(0)
-        if self.images_on_page >= self.max_images_per_page:
-            self.doc.add_page_break()
-            self.images_on_page = 0
-        self.doc.add_picture(temp_io, width=avail_width)
-        self.doc.add_paragraph("")
-        self.images_on_page += 1
-
-    def save(self, path):
-        if self.doc:
-            self.doc.save(path)
-    def is_loaded(self):
-        return self.doc is not None
-    def close(self):
-        self.doc = None
-        self.section = None
-        self.loaded_template = None
-        self.images_on_page = 0
-
-fieldbook_doc_mgr = FieldbookDocManager()  # global for this session
-
+# --------------- Overlay metadata at top ---------------
 def overlay_metadata(pil_img, vdc, ward, sheet, parcel):
     pil_img = pil_img.convert("RGBA")
     draw = ImageDraw.Draw(pil_img)
@@ -112,7 +97,7 @@ def overlay_metadata(pil_img, vdc, ward, sheet, parcel):
     meta_text = f"VDC: {vdc} | Ward: {ward} | Sheet: {sheet} | Parcel: {parcel}"
     date_str = datetime.now().strftime("%Y-%m-%d")
     try:
-        meta_h = draw.textbbox((0,0), meta_text, font=font)[3]+20
+        meta_h = draw.textbbox((0,0), meta_text, font=font)[3] + 20
         date_w = draw.textbbox((0,0), date_str, font=font)[2]
     except Exception:
         meta_h = 40
@@ -123,6 +108,74 @@ def overlay_metadata(pil_img, vdc, ward, sheet, parcel):
     draw.text((10, 10), meta_text, fill=(0, 0, 0), font=font)
     draw.text((width - date_w - 10, 10), date_str, fill=(0,0,0), font=font)
     return pil_img.convert("RGB")
+
+# ---------- Fieldbook DOCX Manager with real footer -------
+class FieldbookDocManager:
+    def __init__(self):
+        self.doc = None
+        self.section = None
+        self.images_on_page = 0
+        self.max_images_per_page = 3
+        self.loaded_template = None
+        self.footer_info = None
+    def new_from_template(self, template_path):
+        self.doc = Document(template_path)
+        self.loaded_template = template_path
+        self.section = self.doc.sections[0]
+        self.images_on_page = 0
+        self.footer_info = None
+    def get_footer_line(self):
+        info = self.footer_info or {}
+        def safe(k, dots):
+            val = info.get(k, "")
+            return val if val else dots
+        return (
+            f"{safe('patra_pathaune','....................')} को च.नं. {safe('chan_dan','.......')} मिति {safe('miti','.............')} "
+            f"को पत्रानुसार {safe('prayojan','...............')} प्रयोजनको लागि  "
+            f"रसिद नं {safe('rasid_no','.....................')} बाट राजश्व लिई कम्प्युटरबाट फिल्डबुक प्रतिलिपि उतार गरि पठाइएको व्यहोरा अनुरोध छ ।"
+        )
+    def insert_footer_to_all_pages(self, footer_info):
+        self.footer_info = footer_info
+        section = self.doc.sections[0]
+        footer = section.footer
+        for para in footer.paragraphs[:]:
+            p = para._element
+            footer._element.remove(p)
+        p1 = footer.add_paragraph()
+        p1.text = self.get_footer_line()
+        p1.alignment = 1
+        gap = " " * 18
+        sigs = f"प्रिन्ट गर्ने{gap}रुजु गर्ने{gap}प्रमाणित गर्ने"
+        p2 = footer.add_paragraph()
+        p2.text = sigs
+        p2.alignment = 1
+    def add_image(self, pil_img, vdc, ward, sheet, parcel):
+        pil_img = overlay_metadata(pil_img, vdc, ward, sheet, parcel)
+        avail_width = self.section.page_width - self.section.left_margin - self.section.right_margin
+        temp_io = io.BytesIO()
+        pil_img.save(temp_io, format="PNG")
+        temp_io.seek(0)
+        if self.images_on_page >= self.max_images_per_page:
+            self.doc.add_page_break()
+            self.images_on_page = 0
+        self.doc.add_picture(temp_io, width=avail_width)
+        self.doc.add_paragraph("")
+        self.images_on_page += 1
+    def save(self, path):
+        if self.footer_info is not None:
+            self.insert_footer_to_all_pages(self.footer_info)
+        if self.doc:
+            self.doc.save(path)
+    def is_loaded(self):
+        return self.doc is not None
+    def close(self):
+        self.doc = None
+        self.section = None
+        self.loaded_template = None
+        self.images_on_page = 0
+        self.footer_info = None
+
+fieldbook_doc_mgr = FieldbookDocManager()  # global for this session
 
 # --- Enhanced Image Viewer ---
 class EnhancedImageViewer(QGraphicsView):
@@ -139,7 +192,6 @@ class EnhancedImageViewer(QGraphicsView):
         self._zoom = 1.0
         self._pan = False
         self._pan_start = QPoint()
-
     def load_image(self, path):
         self.scene().clear()
         self.pixmap = QPixmap(path)
@@ -148,48 +200,38 @@ class EnhancedImageViewer(QGraphicsView):
         self.setSceneRect(QRectF(self.pixmap.rect()))
         self.resetTransform()
         self._zoom = 1.0
-
     def wheelEvent(self, event):
         zoom_factor = 1.25 if event.angleDelta().y() > 0 else 0.8
         self.scale(zoom_factor, zoom_factor)
         self._zoom *= zoom_factor
-
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self._pan = True
             self.setCursor(Qt.ClosedHandCursor)
             self._pan_start = event.pos()
         super().mousePressEvent(event)
-
     def mouseMoveEvent(self, event):
         if self._pan and event.buttons() & Qt.LeftButton:
             delta = self._pan_start - event.pos()
             self._pan_start = event.pos()
-            self.horizontalScrollBar().setValue(
-                self.horizontalScrollBar().value() + delta.x())
-            self.verticalScrollBar().setValue(
-                self.verticalScrollBar().value() + delta.y())
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() + delta.y())
         super().mouseMoveEvent(event)
-
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self._pan = False
             self.setCursor(Qt.ArrowCursor)
         super().mouseReleaseEvent(event)
-
     def zoom_in(self):
         self._zoom *= 1.25
         self.scale(1.25, 1.25)
-
     def zoom_out(self):
         self._zoom *= 0.8
         self.scale(0.8, 0.8)
-
     def reset_view(self):
         self.resetTransform()
         self._zoom = 1.0
 
-# --- Image Viewer Window with Crop, Clipboard, Fieldbook & Print Preview ---
 class ImageViewerWindow(QMainWindow):
     def __init__(self, image_path, config=None, meta=None):
         super().__init__()
@@ -200,7 +242,6 @@ class ImageViewerWindow(QMainWindow):
         self._rect_item = None
         self.config = config
         self.meta = meta or {}
-
         btn_zoom_in = QPushButton("Zoom In")
         btn_zoom_out = QPushButton("Zoom Out")
         btn_crop = QPushButton("Crop")
@@ -208,7 +249,6 @@ class ImageViewerWindow(QMainWindow):
         btn_reset = QPushButton("Reset")
         btn_paste_to_word = QPushButton("Paste into Fieldbook Word")
         btn_preview_print = QPushButton("Print Preview")
-
         btn_zoom_in.clicked.connect(self.viewer.zoom_in)
         btn_zoom_out.clicked.connect(self.viewer.zoom_out)
         btn_reset.clicked.connect(self.viewer.reset_view)
@@ -216,7 +256,6 @@ class ImageViewerWindow(QMainWindow):
         btn_copy.clicked.connect(self.copy_crop)
         btn_paste_to_word.clicked.connect(self.paste_to_word)
         btn_preview_print.clicked.connect(self.preview_print)
-
         btn_layout = QHBoxLayout()
         btn_layout.addWidget(btn_zoom_in)
         btn_layout.addWidget(btn_zoom_out)
@@ -225,20 +264,16 @@ class ImageViewerWindow(QMainWindow):
         btn_layout.addWidget(btn_reset)
         btn_layout.addWidget(btn_paste_to_word)
         btn_layout.addWidget(btn_preview_print)
-
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.viewer)
         main_layout.addLayout(btn_layout)
         container = QWidget()
         container.setLayout(main_layout)
         self.setCentralWidget(container)
-
         self.viewer.viewport().installEventFilter(self)
-
     def activate_crop(self):
         self._crop_mode = True
         self.viewer.setCursor(Qt.CrossCursor)
-
     def eventFilter(self, obj, event):
         if obj is self.viewer.viewport() and self._crop_mode:
             if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
@@ -264,14 +299,12 @@ class ImageViewerWindow(QMainWindow):
                     self._rect_item = None
                 return True
         return super().eventFilter(obj, event)
-
     def copy_crop(self):
         if self._last_crop:
             QApplication.clipboard().setPixmap(self._last_crop)
             QMessageBox.information(self, "Copied", "Cropped image copied to clipboard.")
         else:
             QMessageBox.warning(self, "No Crop", "No crop selected/cropped yet.")
-
     def get_pil_image(self):
         if self._last_crop:
             qimg = self._last_crop.toImage()
@@ -284,7 +317,6 @@ class ImageViewerWindow(QMainWindow):
         qimg.save(buf, "PNG")
         pil_img = Image.open(io.BytesIO(buf.data()))
         return pil_img
-
     def paste_to_word(self):
         pil_img = self.get_pil_image()
         if not pil_img:
@@ -294,7 +326,7 @@ class ImageViewerWindow(QMainWindow):
         if not template_path or not os.path.isfile(template_path):
             QMessageBox.warning(self, "Template", "No template loaded. Use File > Load Fieldbook Template.")
             return
-        if (not fieldbook_doc_mgr.is_loaded()) or (fieldbook_doc_mgr.loaded_template != template_path):
+        if not fieldbook_doc_mgr.is_loaded() or fieldbook_doc_mgr.loaded_template != template_path:
             fieldbook_doc_mgr.new_from_template(template_path)
         vdc = self.meta.get("vdc", "")
         ward = self.meta.get("ward", "")
@@ -303,7 +335,6 @@ class ImageViewerWindow(QMainWindow):
         fieldbook_doc_mgr.add_image(pil_img, vdc, ward, sheet, parcel)
         QMessageBox.information(self, "Image Added",
             "Image added to Fieldbook. You can finalize and save from the button below image list when you're done.")
-
     def preview_print(self):
         pil_img = self.get_pil_image()
         if not pil_img:
@@ -332,7 +363,6 @@ class ImageViewerWindow(QMainWindow):
         dlg.resize(900, 1100)
         dlg.exec_()
 
-# --- Login Widget ---
 class LoginWidget(QWidget):
     def __init__(self, db, on_login):
         super().__init__()
@@ -364,7 +394,6 @@ class LoginWidget(QWidget):
         else:
             QMessageBox.warning(self, "Login Failed", "Invalid username or password.")
 
-# --- Book Viewer ---
 class BookViewer(QWidget):
     def __init__(self, config, config_key, title):
         super().__init__()
@@ -397,11 +426,10 @@ class BookViewer(QWidget):
         self.image_list = QListWidget()
         left_layout.addWidget(QLabel("Available Images:"))
         left_layout.addWidget(self.image_list)
-
         self.finalize_btn = QPushButton("Finalize & Save Fieldbook")
         self.finalize_btn.setMinimumHeight(36)
         self.finalize_btn.clicked.connect(self.finalize_fieldbook)
-        left_layout.addWidget(self.finalize_btn)  # <-- NEW
+        left_layout.addWidget(self.finalize_btn)
         left_layout.addStretch()
         left_widget.setMinimumWidth(350)
         left_widget.setMaximumWidth(500)
@@ -541,11 +569,15 @@ class BookViewer(QWidget):
                     break
         if not found:
             QMessageBox.warning(self, "Not Found", "Parcel not found in this location.")
-
-    # --- NEW: Finalize & Save in panel ---
     def finalize_fieldbook(self):
         if not fieldbook_doc_mgr.is_loaded():
             QMessageBox.information(self, "No Fieldbook", "There is no active fieldbook to save.")
+            return
+        dlg = FieldbookBottomTextDialog(self)
+        if dlg.exec_() == QDialog.Accepted:
+            info = dlg.get_values()
+            fieldbook_doc_mgr.footer_info = info
+        else:
             return
         save_path, _ = QFileDialog.getSaveFileName(self, "Save Fieldbook", "", "Word Files (*.docx)")
         if save_path:
@@ -553,7 +585,6 @@ class BookViewer(QWidget):
             QMessageBox.information(self, "Saved", f"Document saved: {save_path}\nFieldbook cleared.")
             fieldbook_doc_mgr.close()
 
-# --- Main Window ---
 class MainWindow(QMainWindow):
     def __init__(self, db, config):
         super().__init__()
@@ -655,7 +686,6 @@ class MainWindow(QMainWindow):
         if folder:
             self.config.set_folder("plotregister_folder", folder)
             QMessageBox.information(self, "Folder Set", "Plot Register folder set successfully.")
-
     def print_fieldbook(self):
         import subprocess
         import platform
@@ -676,7 +706,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Print", "Print dialog has been opened in your system's Word processor.\nPlease print from there.")
         except Exception as e:
             QMessageBox.warning(self, "Print Error", f"Could not open print dialog automatically.\nError: {str(e)}\nYou can open and print the saved DOCX file manually.")
-
     def logout(self):
         self.username = None
         self.role = None
