@@ -4,6 +4,7 @@ import re
 import sqlite3
 import json
 import io
+from datetime import datetime
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -12,8 +13,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QPixmap, QIntValidator, QIcon, QPalette, QPainter, QPen
 from PyQt5.QtCore import Qt, QRectF, QPoint, QBuffer
-
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from docx import Document
 from docx.shared import Inches
 
@@ -75,9 +75,36 @@ class FieldbookDocManager:
         self.section = self.doc.sections[0]
         self.images_on_page = 0
 
-    def add_image(self, pil_img):
-        if self.doc is None:
-            raise RuntimeError("No doc loaded")
+    def add_image(self, pil_img, vdc, ward, sheet, parcel):
+        # Draw overlays before insertion
+        pil_img = pil_img.convert("RGBA")
+        draw = ImageDraw.Draw(pil_img)
+        width, height = pil_img.size
+
+        # Font setup. Try a TTF if available; fallback to PIL default
+        font_size = 32
+        try:
+            font = ImageFont.truetype("arial.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+
+        # Compose meta string and date string
+        meta_text = f"VDC: {vdc} | Ward: {ward} | Sheet: {sheet} | Parcel: {parcel}"
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        meta_h = draw.textbbox((0,0), meta_text, font=font)[3]+20
+        date_w = draw.textbbox((0,0), date_str, font=font)[2]
+        topbar_h = meta_h
+
+        # Draw top bar (white rectangle with transparency, if supported)
+        barcolor = (255, 255, 255, 220) if pil_img.mode=='RGBA' else (255,255,255)
+        draw.rectangle([(0, 0), (width, topbar_h)], fill=barcolor)
+
+        # Draw metadata left
+        draw.text((10, 10), meta_text, fill=(0, 0, 0), font=font)
+        # Draw date right
+        draw.text((width - date_w - 10, 10), date_str, fill=(0,0,0), font=font)
+        pil_img = pil_img.convert("RGB")
+
         avail_width = self.section.page_width - self.section.left_margin - self.section.right_margin
         temp_io = io.BytesIO()
         pil_img.save(temp_io, format="PNG")
@@ -85,7 +112,6 @@ class FieldbookDocManager:
         if self.images_on_page >= self.max_images_per_page:
             self.doc.add_page_break()
             self.images_on_page = 0
-        # FIX: pass the Length directly, do NOT wrap with Inches()
         self.doc.add_picture(temp_io, width=avail_width)
         self.doc.add_paragraph("")
         self.images_on_page += 1
@@ -93,10 +119,8 @@ class FieldbookDocManager:
     def save(self, path):
         if self.doc:
             self.doc.save(path)
-
     def is_loaded(self):
         return self.doc is not None
-
     def close(self):
         self.doc = None
         self.section = None
@@ -172,7 +196,7 @@ class EnhancedImageViewer(QGraphicsView):
 
 # --- Image Viewer Window with Crop, Clipboard and Fieldbook Integration ---
 class ImageViewerWindow(QMainWindow):
-    def __init__(self, image_path, config=None):
+    def __init__(self, image_path, config=None, meta=None):
         super().__init__()
         self.setWindowTitle("Image Viewer")
         self.viewer = EnhancedImageViewer(image_path)
@@ -180,6 +204,8 @@ class ImageViewerWindow(QMainWindow):
         self._last_crop = None
         self._rect_item = None
         self.config = config
+        self.meta = meta or {}  # {"vdc": ...,"ward":...,"sheet":...,"parcel":...}
+
         btn_zoom_in = QPushButton("Zoom In")
         btn_zoom_out = QPushButton("Zoom Out")
         btn_crop = QPushButton("Crop")
@@ -249,6 +275,7 @@ class ImageViewerWindow(QMainWindow):
             QMessageBox.warning(self, "No Crop", "No crop selected/cropped yet.")
 
     def get_pil_image(self):
+        # Always get as PIL, from cropped or full image
         if self._last_crop:
             qimg = self._last_crop.toImage()
         else:
@@ -270,9 +297,15 @@ class ImageViewerWindow(QMainWindow):
         if not template_path or not os.path.isfile(template_path):
             QMessageBox.warning(self, "Template", "No template loaded. Use File > Load Fieldbook Template.")
             return
+        # Setup document if needed
         if (not fieldbook_doc_mgr.is_loaded()) or (fieldbook_doc_mgr.loaded_template != template_path):
             fieldbook_doc_mgr.new_from_template(template_path)
-        fieldbook_doc_mgr.add_image(pil_img)
+        # Draw required metadata overlays in add_image
+        vdc = self.meta.get("vdc", "")
+        ward = self.meta.get("ward", "")
+        sheet = self.meta.get("sheet", "")
+        parcel = self.meta.get("parcel", "")
+        fieldbook_doc_mgr.add_image(pil_img, vdc, ward, sheet, parcel)
         resp = QMessageBox.question(self, "Image Added",
             "Image added to fieldbook. Add more, or save/export fieldbook now?",
             QMessageBox.Yes | QMessageBox.No)
@@ -290,6 +323,7 @@ class LoginWidget(QWidget):
         self.db = db
         self.on_login = on_login
         self.init_ui()
+
     def init_ui(self):
         layout = QVBoxLayout()
         group = QGroupBox("Login")
@@ -306,6 +340,7 @@ class LoginWidget(QWidget):
         group.setContentsMargins(10, 10, 10, 10)
         layout.addWidget(group)
         self.setLayout(layout)
+
     def try_login(self):
         username = self.user_edit.text()
         password = self.pass_edit.text()
@@ -324,6 +359,7 @@ class BookViewer(QWidget):
         self.title = title
         self.folder = self.config.get_folder(self.config_key)
         self.init_ui()
+
     def init_ui(self):
         main_layout = QHBoxLayout(self)
         left_widget = QWidget()
@@ -376,6 +412,7 @@ class BookViewer(QWidget):
         self.sheet_combo.currentTextChanged.connect(self.update_images)
         self.image_list.currentTextChanged.connect(self.load_selected_image)
         self.populate_vdcs()
+
     def set_folder(self, folder):
         self.folder = folder
         self.populate_vdcs()
@@ -449,6 +486,12 @@ class BookViewer(QWidget):
         ward = self.ward_combo.currentText()
         sheet = self.sheet_combo.currentText()
         parcel = self.parcel_edit.text()
+        meta = {
+            "vdc": vdc,
+            "ward": ward,
+            "sheet": sheet,
+            "parcel": parcel
+        }
         if not (vdc and parcel):
             QMessageBox.warning(self, "Error", "Please select all fields and enter a parcel number.")
             return
@@ -460,7 +503,7 @@ class BookViewer(QWidget):
                 if m and int(m.group(1)) <= int(parcel) <= int(m.group(2)):
                     image_path = os.path.join(vdc_path, img)
                     found = True
-                    viewer = ImageViewerWindow(image_path, config=self.config)
+                    viewer = ImageViewerWindow(image_path, config=self.config, meta=meta)
                     viewer.show()
                     viewer.raise_()
                     viewer.activateWindow()
@@ -473,7 +516,7 @@ class BookViewer(QWidget):
                 if m and int(m.group(1)) <= int(parcel) <= int(m.group(2)):
                     image_path = os.path.join(sheet_path, img)
                     found = True
-                    viewer = ImageViewerWindow(image_path, config=self.config)
+                    viewer = ImageViewerWindow(image_path, config=self.config, meta=meta)
                     viewer.show()
                     viewer.raise_()
                     viewer.activateWindow()
