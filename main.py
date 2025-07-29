@@ -5,18 +5,18 @@ import sqlite3
 import json
 import io
 from datetime import datetime
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QFileDialog, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QMessageBox, QFormLayout, QGroupBox, QAction, QListWidget, QStackedWidget,
-    QDialog, QScrollArea
+    QMessageBox, QFormLayout, QGroupBox, QAction, QListWidget, QStackedWidget, QDialog, QScrollArea
 )
 from PyQt5.QtGui import QPixmap, QIntValidator, QIcon, QPalette, QPainter, QPen, QImage
 from PyQt5.QtCore import Qt, QRectF, QPoint, QBuffer
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 from docx import Document
 
-# ---------------- Footer input dialog ----------------
+# --- Dialog for doc footer info ---
 class FieldbookBottomTextDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -41,7 +41,7 @@ class FieldbookBottomTextDialog(QDialog):
     def get_values(self):
         return {k: field.text().strip() for k, field in self.inputs.items()}
 
-# ---------------- Config Helper ----------------
+# --- Config file manager ---
 class Config:
     def __init__(self, path="config.json"):
         self.path = path
@@ -62,7 +62,7 @@ class Config:
         self.data[key] = folder
         self.save()
 
-# ----------------- Database Helper ------------------
+# --- User DB with sqlite3 ---
 class UserDB:
     def __init__(self, db_path="users.db"):
         self.conn = sqlite3.connect(db_path)
@@ -84,32 +84,7 @@ class UserDB:
         row = cur.fetchone()
         return row[0] if row else None
 
-# --------------- Overlay metadata at top ---------------
-def overlay_metadata(pil_img, vdc, ward, sheet, parcel):
-    pil_img = pil_img.convert("RGBA")
-    draw = ImageDraw.Draw(pil_img)
-    width, height = pil_img.size
-    font_size = 32
-    try:
-        font = ImageFont.truetype("arial.ttf", font_size)
-    except:
-        font = ImageFont.load_default()
-    meta_text = f"गाविस: {vdc} | वडा नं: {ward} | सिट: {sheet} | कित्ता नं: {parcel}"
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    try:
-        meta_h = draw.textbbox((0,0), meta_text, font=font)[3] + 20
-        date_w = draw.textbbox((0,0), date_str, font=font)[2]
-    except Exception:
-        meta_h = 40
-        date_w = 120
-    topbar_h = meta_h
-    barcolor = (255, 255, 255, 220) if pil_img.mode=='RGBA' else (255,255,255)
-    draw.rectangle([(0, 0), (width, topbar_h)], fill=barcolor)
-    draw.text((10, 10), meta_text, fill=(0, 0, 0), font=font)
-    draw.text((width - date_w - 10, 10), date_str, fill=(0,0,0), font=font)
-    return pil_img.convert("RGB")
-
-# ---------- Fieldbook DOCX Manager with real footer -------
+# --- Fieldbook Word Document Manager ---
 class FieldbookDocManager:
     def __init__(self):
         self.doc = None
@@ -150,7 +125,7 @@ class FieldbookDocManager:
         p2.text = sigs
         p2.alignment = 1
     def add_image(self, pil_img, vdc, ward, sheet, parcel):
-        pil_img = overlay_metadata(pil_img, vdc, ward, sheet, parcel)
+        # DO NOT overlay metadata, just insert image as-is
         avail_width = self.section.page_width - self.section.left_margin - self.section.right_margin
         temp_io = io.BytesIO()
         pil_img.save(temp_io, format="PNG")
@@ -175,9 +150,9 @@ class FieldbookDocManager:
         self.images_on_page = 0
         self.footer_info = None
 
-fieldbook_doc_mgr = FieldbookDocManager()  # global for this session
+fieldbook_doc_mgr = FieldbookDocManager() # global
 
-# --- Enhanced Image Viewer ---
+# ---- Enhanced Image Viewer and supporting GUI logic ----
 class EnhancedImageViewer(QGraphicsView):
     def __init__(self, image_path=None):
         super().__init__()
@@ -232,6 +207,7 @@ class EnhancedImageViewer(QGraphicsView):
         self.resetTransform()
         self._zoom = 1.0
 
+# ---- Image Viewer Window now with metadata label ----
 class ImageViewerWindow(QMainWindow):
     def __init__(self, image_path, config=None, meta=None):
         super().__init__()
@@ -242,6 +218,12 @@ class ImageViewerWindow(QMainWindow):
         self._rect_item = None
         self.config = config
         self.meta = meta or {}
+
+        # Metadata label
+        self.meta_label = QLabel(self.format_metadata())
+        self.meta_label.setWordWrap(True)
+        self.meta_label.setStyleSheet("font-size: 15px; padding: 7px 3px; font-weight: 600; color: #192a60")
+
         btn_zoom_in = QPushButton("Zoom In")
         btn_zoom_out = QPushButton("Zoom Out")
         btn_crop = QPushButton("Crop")
@@ -265,12 +247,16 @@ class ImageViewerWindow(QMainWindow):
         btn_layout.addWidget(btn_paste_to_word)
         btn_layout.addWidget(btn_preview_print)
         main_layout = QVBoxLayout()
+        main_layout.addWidget(self.meta_label)  # Metadata above
         main_layout.addWidget(self.viewer)
         main_layout.addLayout(btn_layout)
         container = QWidget()
         container.setLayout(main_layout)
         self.setCentralWidget(container)
         self.viewer.viewport().installEventFilter(self)
+    def format_metadata(self):
+        m = self.meta
+        return f"गा.वि.स: {m.get('vdc','')} | वडा नं: {m.get('ward','')} | सिट: {m.get('sheet','')} | कि. नं: {m.get('parcel','')}"
     def activate_crop(self):
         self._crop_mode = True
         self.viewer.setCursor(Qt.CrossCursor)
@@ -340,22 +326,22 @@ class ImageViewerWindow(QMainWindow):
         if not pil_img:
             QMessageBox.warning(self, "Error", "No image to preview.")
             return
-        vdc = self.meta.get("vdc", "")
-        ward = self.meta.get("ward", "")
-        sheet = self.meta.get("sheet", "")
-        parcel = self.meta.get("parcel", "")
-        preview_img = overlay_metadata(pil_img, vdc, ward, sheet, parcel)
+        # Show clean image in preview, plus metadata label
         buf = io.BytesIO()
-        preview_img.save(buf, format="PNG")
+        pil_img.save(buf, format="PNG")
         qt_img = QImage.fromData(buf.getvalue())
         pixmap = QPixmap.fromImage(qt_img)
         label = QLabel()
         label.setPixmap(pixmap)
         label.setScaledContents(True)
         label.setMinimumSize(min(pixmap.width(), 800), min(pixmap.height(), 1000))
+        # Add metadata label to preview dialog
         dlg = QDialog(self)
         dlg.setWindowTitle("Print Preview")
         layout = QVBoxLayout(dlg)
+        meta_label = QLabel(self.format_metadata())
+        meta_label.setStyleSheet("font-size:15px; font-weight:600;")
+        layout.addWidget(meta_label)
         scroll = QScrollArea()
         scroll.setWidget(label)
         scroll.setWidgetResizable(True)
@@ -363,6 +349,7 @@ class ImageViewerWindow(QMainWindow):
         dlg.resize(900, 1100)
         dlg.exec_()
 
+# --- Login Widget ---
 class LoginWidget(QWidget):
     def __init__(self, db, on_login):
         super().__init__()
@@ -394,6 +381,7 @@ class LoginWidget(QWidget):
         else:
             QMessageBox.warning(self, "Login Failed", "Invalid username or password.")
 
+# --- Book/Image Folder Browsers ---
 class BookViewer(QWidget):
     def __init__(self, config, config_key, title):
         super().__init__()
@@ -531,12 +519,7 @@ class BookViewer(QWidget):
         ward = self.ward_combo.currentText()
         sheet = self.sheet_combo.currentText()
         parcel = self.parcel_edit.text()
-        meta = {
-            "vdc": vdc,
-            "ward": ward,
-            "sheet": sheet,
-            "parcel": parcel
-        }
+        meta = {"vdc": vdc, "ward": ward, "sheet": sheet, "parcel": parcel}
         if not (vdc and parcel):
             QMessageBox.warning(self, "Error", "Please select all fields and enter a parcel number.")
             return
@@ -585,6 +568,7 @@ class BookViewer(QWidget):
             QMessageBox.information(self, "Saved", f"Document saved: {save_path}\nFieldbook cleared.")
             fieldbook_doc_mgr.close()
 
+# ---- Main Window ----
 class MainWindow(QMainWindow):
     def __init__(self, db, config):
         super().__init__()
@@ -733,7 +717,7 @@ def main():
     app.setPalette(palette)
     app.setStyleSheet("""
         QWidget {
-            font-family: 'Segoe UI', 'Mangal', 'Arial', sans-serif;
+            font-family: 'Segoe UI', 'Kalimati', 'Arial', sans-serif;
             font-size: 15px;
         }
         QMainWindow {
@@ -754,22 +738,6 @@ def main():
             border-radius: 8px;
             padding: 6px 10px;
             background: #f9f9fc;
-        }
-        QComboBox QAbstractItemView {
-            selection-background-color: #1976d2;
-            selection-color: #ffffff;
-            background: #f9f9fc;
-            color: #222;
-            border-radius: 0 0 8px 8px;
-            outline: none;
-        }
-        QComboBox QAbstractItemView::item:hover {
-            background: #1565c0;
-            color: #fff;
-        }
-        QComboBox QAbstractItemView::item:selected {
-            background: #1976d2;
-            color: #fff;
         }
         QPushButton {
             background-color: #1976d2;
