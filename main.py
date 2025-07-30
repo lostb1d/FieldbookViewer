@@ -197,12 +197,13 @@ class FieldbookDocManager:
 
         self.footer_info = footer_info
         section = self.doc.sections[0]
-        footer = section.footer
 
+        
         # Clear existing paragraphs
-        for para in footer.paragraphs[:]:
-            p = para._element
-            footer._element.remove(p)
+        footer = section.footer
+        for element in footer._element.xpath("./w:p | ./w:tbl"):
+            footer._element.remove(element)
+
 
         # Footer text paragraph
         p1 = footer.add_paragraph()
