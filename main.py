@@ -12,14 +12,15 @@ import subprocess
 import fitz  # PyMuPDF
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QScrollArea, QWidget
 from PyQt5.QtGui import QPixmap, QImage
-
-
+from PyQt5.QtWidgets import QSlider
+from PyQt5.QtGui import QTransform
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QFileDialog, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QMessageBox, QFormLayout, QGroupBox, QAction, QListWidget, QStackedWidget, QDialog, QScrollArea
 )
+
 from PyQt5.QtGui import QPixmap, QIntValidator, QIcon, QPalette, QPainter, QPen, QImage
 from PyQt5.QtCore import Qt, QRectF, QPoint, QBuffer
 from PIL import Image
@@ -110,6 +111,7 @@ class FieldbookBottomTextDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(button)
+
     def get_values(self):
         return {k: field.text().strip() for k, field in self.inputs.items()}
 
@@ -171,12 +173,14 @@ class FieldbookDocManager:
         self.max_images_per_page = 3
         self.loaded_template = None
         self.footer_info = None
+
     def new_from_template(self, template_path):
         self.doc = Document(template_path)
         self.loaded_template = template_path
         self.section = self.doc.sections[0]
         self.images_on_page = 0
         self.footer_info = None
+
     def get_footer_line(self):
         info = self.footer_info or {}
         def safe(k, dots):
@@ -194,6 +198,7 @@ class FieldbookDocManager:
         self.footer_info = footer_info
         section = self.doc.sections[0]
         footer = section.footer
+
         # Clear existing paragraphs
         for para in footer.paragraphs[:]:
             p = para._element
@@ -210,6 +215,7 @@ class FieldbookDocManager:
         # Single-row three-column table for signatures
         table = footer.add_table(rows=1, cols=3, width=section.page_width - section.left_margin - section.right_margin)
         table.allow_autofit = True
+
         # Set each cell's content and style
         cell_texts = ["प्रिन्ट गर्ने", "रुजु गर्ने", "प्रमाणित गर्ने"]
         aligns = [0, 1, 2]  # left, center, right
@@ -230,7 +236,7 @@ class FieldbookDocManager:
                 cell.getparent().remove(cell)
         
         # Set footer margin distance
-        section.footer_distance = Pt(5)
+        section.footer_distance = Pt(10)
 
     def add_image(self, pil_img, vdc, ward, sheet, parcel):
         # Convert all numbers to Nepali
@@ -281,8 +287,9 @@ class EnhancedImageViewer(QGraphicsView):
     def __init__(self, image_path=None):
         super().__init__()
         self.setScene(QGraphicsScene())
-        self.pixmap = QPixmap(image_path) if image_path else QPixmap()
-        self.pixmap_item = QGraphicsPixmapItem(self.pixmap)
+        self.base_pixmap = QPixmap(image_path) if image_path else QPixmap()
+        self.angle = 0
+        self.pixmap_item = QGraphicsPixmapItem(self.base_pixmap)
         self.scene().addItem(self.pixmap_item)
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
@@ -293,16 +300,27 @@ class EnhancedImageViewer(QGraphicsView):
         self._pan_start = QPoint()
     def load_image(self, path):
         self.scene().clear()
-        self.pixmap = QPixmap(path)
-        self.pixmap_item = QGraphicsPixmapItem(self.pixmap)
+        self.base_pixmap = QPixmap(path)
+        self.angle = 0
+        self.pixmap_item = QGraphicsPixmapItem(self.base_pixmap)
         self.scene().addItem(self.pixmap_item)
-        self.setSceneRect(QRectF(self.pixmap.rect()))
+        self.setSceneRect(QRectF(self.base_pixmap.rect()))
         self.resetTransform()
         self._zoom = 1.0
+    
+    def set_rotation(self, angle):
+        """Sets rotation to a specified angle (in degrees) and updates the display."""
+        self.angle = angle
+        t = QTransform()
+        t.rotate(self.angle)
+        self.pixmap_item.setPixmap(self.base_pixmap.transformed(t, Qt.SmoothTransformation))
+
+
     def wheelEvent(self, event):
         zoom_factor = 1.25 if event.angleDelta().y() > 0 else 0.8
         self.scale(zoom_factor, zoom_factor)
         self._zoom *= zoom_factor
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self._pan = True
@@ -342,6 +360,13 @@ class ImageViewerWindow(QMainWindow):
         self._rect_item = None
         self.config = config
         self.meta = meta or {}
+        self.rotation_slider = QSlider(Qt.Horizontal)
+        self.rotation_slider.setMinimum(0)
+        self.rotation_slider.setMaximum(360)
+        self.rotation_slider.setValue(0)
+        self.rotation_slider.setTickPosition(QSlider.TicksBelow)
+        self.rotation_slider.setTickInterval(30)
+        self.rotation_slider.valueChanged.connect(self.on_slider_rotate)
 
         # Metadata label
         self.meta_label = QLabel(self.format_metadata())
@@ -374,10 +399,18 @@ class ImageViewerWindow(QMainWindow):
         main_layout.addWidget(self.meta_label)  # Metadata above
         main_layout.addWidget(self.viewer)
         main_layout.addLayout(btn_layout)
+
+        main_layout.addWidget(QLabel("Rotate (0°–360°):"))
+        main_layout.addWidget(self.rotation_slider)
+
         container = QWidget()
         container.setLayout(main_layout)
         self.setCentralWidget(container)
         self.viewer.viewport().installEventFilter(self)
+
+    def on_slider_rotate(self, value):
+        self.viewer.set_rotation(value)
+
     def format_metadata(self):
         m = self.meta
         return f"गा.वि.स: {m.get('vdc','')} | वडा नं: {m.get('ward','')} | सिट: {m.get('sheet','')} | कि. नं: {m.get('parcel','')}"
@@ -404,7 +437,7 @@ class ImageViewerWindow(QMainWindow):
                 self.viewer.setCursor(Qt.ArrowCursor)
                 if self._rect_item:
                     rect = self._rect_item.rect().toRect()
-                    cropped = self.viewer.pixmap.copy(rect)
+                    cropped = self.viewer.base_pixmap.copy(rect)
                     self._last_crop = cropped
                     self._rect_item = None
                 return True
@@ -480,6 +513,7 @@ class LoginWidget(QWidget):
         self.db = db
         self.on_login = on_login
         self.init_ui()
+
     def init_ui(self):
         layout = QVBoxLayout()
         group = QGroupBox("Login")
@@ -515,6 +549,7 @@ class BookViewer(QWidget):
         self.title = title
         self.folder = self.config.get_folder(self.config_key)
         self.init_ui()
+
     def init_ui(self):
         main_layout = QHBoxLayout(self)
         left_widget = QWidget()
@@ -553,7 +588,6 @@ class BookViewer(QWidget):
         btn_box.addWidget(self.print_btn)
         left_layout.addLayout(btn_box)
 
-
         left_layout.addStretch()
         left_widget.setMinimumWidth(350)
         left_widget.setMaximumWidth(500)
@@ -582,9 +616,11 @@ class BookViewer(QWidget):
         self.sheet_combo.currentTextChanged.connect(self.update_images)
         self.image_list.currentTextChanged.connect(self.load_selected_image)
         self.populate_vdcs()
+
     def set_folder(self, folder):
         self.folder = folder
         self.populate_vdcs()
+
     def populate_vdcs(self):
         self.vdc_combo.clear()
         if not self.folder or not os.path.isdir(self.folder):
@@ -594,6 +630,7 @@ class BookViewer(QWidget):
         if vdcs:
             self.vdc_combo.setCurrentIndex(0)
             self.update_wards(vdcs[0])
+
     def update_wards(self, vdc):
         self.ward_combo.clear()
         vdc_path = os.path.join(self.folder, vdc)
@@ -607,6 +644,7 @@ class BookViewer(QWidget):
         if self.ward_combo.count() > 0:
             self.ward_combo.setCurrentIndex(0)
             self.update_sheets(self.ward_combo.currentText())
+
     def update_sheets(self, ward):
         vdc = self.vdc_combo.currentText()
         vdc_path = os.path.join(self.folder, vdc)
@@ -622,6 +660,7 @@ class BookViewer(QWidget):
         if sheets:
             self.sheet_combo.setCurrentIndex(0)
             self.update_images(sheets[0])
+
     def update_images(self, sheet):
         vdc = self.vdc_combo.currentText()
         ward = self.ward_combo.currentText()
@@ -640,6 +679,7 @@ class BookViewer(QWidget):
         self.image_list.addItems(images)
         if images:
             self.image_list.setCurrentRow(0)
+
     def load_selected_image(self, filename):
         vdc = self.vdc_combo.currentText()
         ward = self.ward_combo.currentText()
@@ -650,6 +690,7 @@ class BookViewer(QWidget):
             path = os.path.join(self.folder, vdc, ward, sheet, filename)
         if os.path.isfile(path):
             self.viewer.load_image(path)
+
     def search_image(self):
         vdc = self.vdc_combo.currentText()
         ward = self.ward_combo.currentText()
@@ -688,6 +729,7 @@ class BookViewer(QWidget):
                     break
         if not found:
             QMessageBox.warning(self, "Not Found", "Parcel not found in this location.")
+
     def finalize_fieldbook(self):
         if not fieldbook_doc_mgr.is_loaded():
             QMessageBox.information(self, "No Fieldbook", "There is no active fieldbook to save.")
@@ -752,9 +794,6 @@ class BookViewer(QWidget):
             QMessageBox.warning(self, "Error", f"Could not open DOCX for preview: {e}")
             return
 
-
-
-
 # ---- Main Window ----
 class MainWindow(QMainWindow):
     def __init__(self, db, config):
@@ -769,6 +808,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.stacked)
         self.init_menu()
         self.show_login()
+
     def init_menu(self):
         menubar = self.menuBar()
         self.menu_file = menubar.addMenu("File")
@@ -790,11 +830,13 @@ class MainWindow(QMainWindow):
         self.action_logout.triggered.connect(self.logout)
         self.menu_file.addAction(self.action_logout)
         self.menu_file.setEnabled(False)
+
     def load_fieldbook_template(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Fieldbook Template", "", "Word Files (*.docx)")
         if file_path:
             self.config.set_folder("fieldbook_template", file_path)
             QMessageBox.information(self, "Template Loaded", "Template loaded successfully.")
+
     def show_login(self):
         self.menu_file.setEnabled(False)
         while self.stacked.count() > 0:
@@ -804,11 +846,13 @@ class MainWindow(QMainWindow):
         self.login_widget = LoginWidget(self.db, self.on_login)
         self.stacked.addWidget(self.login_widget)
         self.stacked.setCurrentWidget(self.login_widget)
+
     def on_login(self, username, role):
         self.username = username
         self.role = role
         self.menu_file.setEnabled(True)
         self.show_home()
+
     def show_home(self):
         home = QWidget()
         layout = QVBoxLayout(home)
@@ -831,6 +875,7 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         self.stacked.addWidget(home)
         self.stacked.setCurrentWidget(home)
+
     def show_fieldbook(self):
         folder = self.config.get_folder("fieldbook_folder")
         if not folder or not os.path.isdir(folder):
@@ -839,6 +884,7 @@ class MainWindow(QMainWindow):
         self.fieldbook_viewer = BookViewer(self.config, "fieldbook_folder", "Fieldbook Viewer")
         self.stacked.addWidget(self.fieldbook_viewer)
         self.stacked.setCurrentWidget(self.fieldbook_viewer)
+
     def show_plotregister(self):
         folder = self.config.get_folder("plotregister_folder")
         if not folder or not os.path.isdir(folder):
@@ -847,16 +893,19 @@ class MainWindow(QMainWindow):
         self.plotregister_viewer = BookViewer(self.config, "plotregister_folder", "Plot Register Viewer")
         self.stacked.addWidget(self.plotregister_viewer)
         self.stacked.setCurrentWidget(self.plotregister_viewer)
+
     def set_fieldbook_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Fieldbook Root Directory", os.getcwd())
         if folder:
             self.config.set_folder("fieldbook_folder", folder)
             QMessageBox.information(self, "Folder Set", "Fieldbook folder set successfully.")
+
     def set_plotregister_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Plot Register Root Directory", os.getcwd())
         if folder:
             self.config.set_folder("plotregister_folder", folder)
             QMessageBox.information(self, "Folder Set", "Plot Register folder set successfully.")
+            
     def print_fieldbook(self):
         import subprocess
         import platform
