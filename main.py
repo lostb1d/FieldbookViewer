@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayo
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtWidgets import QSlider
 from PyQt5.QtGui import QTransform
-
+from docx.shared import Pt
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QFileDialog, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
@@ -240,18 +240,14 @@ class FieldbookDocManager:
         section.footer_distance = Pt(10)
 
     def add_image(self, pil_img, vdc, ward, sheet, parcel):
-        # Convert all numbers to Nepali
+        from docx.shared import Pt
+        from docx.oxml.ns import qn
+
+        # Prepare the meta text
         def nep(txt): return to_nepali_number(txt) if txt else ''
         meta_text = (
             f"गा.वि.स: {vdc} | वडा नं: {nep(ward)} | सिट: {nep(sheet)} | कित्ता नं: {nep(parcel)}"
         )
-        p = self.doc.add_paragraph()
-        run = p.add_run(meta_text)
-        run.font.bold = True
-        run.font.size = Pt(10)
-        run.font.name = "Kalimati"
-        r = run._element
-        r.rPr.rFonts.set(qn('w:eastAsia'), 'Kalimati')
 
         avail_width = self.section.page_width - self.section.left_margin - self.section.right_margin
         temp_io = io.BytesIO()
@@ -260,9 +256,27 @@ class FieldbookDocManager:
         if self.images_on_page >= self.max_images_per_page:
             self.doc.add_page_break()
             self.images_on_page = 0
+
+        # Add the image
         self.doc.add_picture(temp_io, width=avail_width)
-        # self.doc.add_paragraph("")  # Optionally add space after image
+        last_paragraph = self.doc.paragraphs[-1]
+        last_paragraph.paragraph_format.space_after = Pt(0)
+        last_paragraph.paragraph_format.keep_with_next = True
+
+        # Add the details text in the very next paragraph, tight below the image
+        p = self.doc.add_paragraph(meta_text)
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(0)
+        p.paragraph_format.keep_with_next = True
+
+        run = p.runs[0]
+        run.font.bold = True
+        run.font.size = Pt(10)
+        run.font.name = "Kalimati"
+        run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Kalimati')
+
         self.images_on_page += 1
+
 
 
     def save(self, path):
