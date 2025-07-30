@@ -257,13 +257,7 @@ class FieldbookDocManager:
             self.doc.add_page_break()
             self.images_on_page = 0
 
-        # Add the image
-        self.doc.add_picture(temp_io, width=avail_width)
-        last_paragraph = self.doc.paragraphs[-1]
-        last_paragraph.paragraph_format.space_after = Pt(0)
-        last_paragraph.paragraph_format.keep_with_next = True
-
-        # Add the details text in the very next paragraph, tight below the image
+         # Add the details text in the very next paragraph, tight below the image
         p = self.doc.add_paragraph(meta_text)
         p.paragraph_format.space_before = Pt(0)
         p.paragraph_format.space_after = Pt(0)
@@ -274,6 +268,14 @@ class FieldbookDocManager:
         run.font.size = Pt(10)
         run.font.name = "Kalimati"
         run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Kalimati')
+        
+        # Add the image
+        self.doc.add_picture(temp_io, width=avail_width)
+        last_paragraph = self.doc.paragraphs[-1]
+        last_paragraph.paragraph_format.space_after = Pt(0)
+        last_paragraph.paragraph_format.keep_with_next = True
+
+       
 
         self.images_on_page += 1
 
