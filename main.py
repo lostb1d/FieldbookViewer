@@ -25,12 +25,24 @@ from docx.shared import Pt, Inches
 from docx.oxml.ns import qn
 import fitz  # PyMuPDF
 
+def get_appdata_folder(appname="FieldbookViewer"):
+    if sys.platform == "win32":
+        # e.g., C:\Users\user\AppData\Local\FieldbookViewer
+        base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~\\AppData\\Local')
+        return os.path.join(base, appname)
+    elif sys.platform == 'darwin':
+        # e.g., /Users/user/Library/Application Support/FieldbookViewer
+        return os.path.join(os.path.expanduser('~/Library/Application Support/'), appname)
+    else:
+        # Linux/UNIX: ~/.local/share/FieldbookViewer
+        return os.path.join(os.path.expanduser('~/.local/share/'), appname)
+
 def to_nepali_number(num):
     num_map = str.maketrans('0123456789', '०१२३४५६७८९')
     return str(num).translate(num_map)
 
 class Config:
-    def __init__(self, path="config.json"):
+    def __init__(self, path):
         self.path = path
         self.data = {}
         self.load()
@@ -50,7 +62,7 @@ class Config:
         self.save()
 
 class UserDB:
-    def __init__(self, db_path="users.db"):
+    def __init__(self, db_path):
         self.conn = sqlite3.connect(db_path)
         self.create_table()
     def create_table(self):
@@ -1087,8 +1099,15 @@ def main():
             padding: 6px;
         }
     """)
-    db = UserDB()
-    config = Config()
+
+    APPDATA = get_appdata_folder()
+    os.makedirs(APPDATA, exist_ok=True)  # Ensure it exists!
+    CONFIG_PATH = os.path.join(APPDATA, "config.json")
+    DB_PATH = os.path.join(APPDATA, "users.db")
+
+    db = UserDB(db_path=DB_PATH)
+    config = Config(path=CONFIG_PATH)
+
     window = MainWindow(db, config)
     window.show()
     sys.exit(app.exec_())
