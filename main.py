@@ -26,6 +26,9 @@ from PyQt5.QtCore import Qt, QRectF, QPoint, QBuffer
 from PIL import Image
 from docx import Document
 from PyQt5.QtGui import QClipboard    
+import tempfile
+from docx import Document
+
 
 
 
@@ -397,12 +400,10 @@ class ImageViewerWindow(QMainWindow):
         btn_zoom_out = QPushButton("Zoom Out")
         btn_crop = QPushButton("Crop")
         btn_copy = QPushButton("Copy Crop")
-        btn_reset = QPushButton("Reset")
         btn_paste_to_word = QPushButton("Paste into Fieldbook Word")
         btn_preview_print = QPushButton("Print Preview")
         btn_zoom_in.clicked.connect(self.viewer.zoom_in)
         btn_zoom_out.clicked.connect(self.viewer.zoom_out)
-        btn_reset.clicked.connect(self.viewer.reset_view)
         btn_crop.clicked.connect(self.activate_crop)
         btn_copy.clicked.connect(self.copy_crop)
         btn_paste_to_word.clicked.connect(self.paste_to_word)
@@ -412,7 +413,6 @@ class ImageViewerWindow(QMainWindow):
         btn_layout.addWidget(btn_zoom_out)
         btn_layout.addWidget(btn_crop)
         btn_layout.addWidget(btn_copy)
-        btn_layout.addWidget(btn_reset)
         btn_layout.addWidget(btn_paste_to_word)
         btn_layout.addWidget(btn_preview_print)
         main_layout = QVBoxLayout()
@@ -602,7 +602,7 @@ class BookViewer(QWidget):
        # --- Button Row: Finalize | Print | Reset ---
         self.finalize_btn = QPushButton("Save")
         self.print_btn = QPushButton("Print")
-        self.reset_btn = QPushButton("Reset")
+        
 
         # Suggested consistent small styling for all:
         btn_style = (
@@ -611,21 +611,8 @@ class BookViewer(QWidget):
             "min-width: 90px; "
             "min-height: 30px;"
         )
-        self.reset_btn.setStyleSheet(
-            "background-color: #d32f2f; color: white; "
-            "border-radius: 4px;"
-            "padding: 4px 12px; "
-            "font-size: 13px; "
-            "min-width: 90px; "
-            "min-height: 30px;"
-            "font-weight: bold;"
-            "QPushButton:hover { background-color: #b71c1c; }"
-            "QPushButton:pressed { background-color: #c62828; }"
-        )
-
-
-
-        for btn in (self.finalize_btn, self.print_btn, self.reset_btn):
+        
+        for btn in (self.finalize_btn, self.print_btn):
             btn.setStyleSheet(btn_style)
             btn.setFixedHeight(32)
             btn.setFixedWidth(100)
@@ -633,14 +620,12 @@ class BookViewer(QWidget):
         # Connect signals
         self.finalize_btn.clicked.connect(self.finalize_fieldbook)
         self.print_btn.clicked.connect(self.print_fieldbook)
-        self.reset_btn.clicked.connect(self.reset_viewer_state)
 
         # Add the button row
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)  # spacing between buttons
         btn_row.addWidget(self.finalize_btn)
         btn_row.addWidget(self.print_btn)
-        btn_row.addWidget(self.reset_btn)
         btn_row.addStretch()
         left_layout.addLayout(btn_row)
 
@@ -659,14 +644,11 @@ class BookViewer(QWidget):
         self.viewer = EnhancedImageViewer()
         btn_zoom_in = QPushButton("Zoom In")
         btn_zoom_out = QPushButton("Zoom Out")
-        btn_reset = QPushButton("Reset")
         btn_zoom_in.clicked.connect(self.viewer.zoom_in)
         btn_zoom_out.clicked.connect(self.viewer.zoom_out)
-        btn_reset.clicked.connect(self.viewer.reset_view)
         btn_layout = QHBoxLayout()
         btn_layout.addWidget(btn_zoom_in)
         btn_layout.addWidget(btn_zoom_out)
-        btn_layout.addWidget(btn_reset)
         right_layout.addWidget(QLabel("Preview:"))
         right_layout.addWidget(self.viewer)
         right_layout.addLayout(btn_layout)
@@ -681,40 +663,7 @@ class BookViewer(QWidget):
         self.image_list.currentTextChanged.connect(self.load_selected_image)
         self.populate_vdcs()
 
-    def reset_viewer_state(self):
-        # 1. Clear UI fields
-        self.vdc_combo.setCurrentIndex(-1)
-        self.ward_combo.clear()
-        self.sheet_combo.clear()
-        self.parcel_edit.clear()
-        self.image_list.clear()
-        self.viewer.base_pixmap = QPixmap()
-        self.viewer.pixmap_item.setPixmap(QPixmap())  # Clears displayed image
-        self.viewer.reset_view()
-
-        # 2. Clear clipboard (images, text)
-        from PyQt5.QtGui import QClipboard
-        from PyQt5.QtWidgets import QApplication
-        QApplication.clipboard().clear(mode=QClipboard.Clipboard)
-        QApplication.clipboard().clear(mode=QClipboard.Selection)
-
-        # 3. Clear/reset the temp Fieldbook document and any copied images in it
-        if hasattr(self, "fieldbook_doc_mgr") and self.fieldbook_doc_mgr.is_loaded():
-            self.fieldbook_doc_mgr.close()   # This should clear the doc, images, and state
-        # If you store a temp doc path, delete the file:
-        import os
-        temp_doc_path = getattr(self, "temp_doc_path", None)
-        if temp_doc_path and os.path.exists(temp_doc_path):
-            os.remove(temp_doc_path)
-            self.temp_doc_path = None    # Reset the variable
-
-        # 4. Optionally re-initialize the doc manager to get a fresh/new empty doc
-        # self.fieldbook_doc_mgr = FieldbookDocManager()  # If needed, recreate manager
-
-        # 5. Prepare state as after login (e.g., if login page resets more)
-        # If you have a method to set initial post-login state, call it here.
-
-
+    
     def set_folder(self, folder):
         self.folder = folder
         self.populate_vdcs()
@@ -928,12 +877,7 @@ class MainWindow(QMainWindow):
         self.action_logout.triggered.connect(self.logout)
         self.menu_file.addAction(self.action_logout)
         self.menu_file.setEnabled(False)
-        self.reset_btn = QPushButton("Reset")
-        self.reset_btn.setStyleSheet("margin:8px 18px 0 0; padding:8px 22px; font-size:15px; font-weight:600;")
-        self.reset_btn.setFixedHeight(42)
-        self.reset_btn.setFixedWidth(110)
-        self.reset_btn.clicked.connect(self.reset_application)
-        self.reset_btn.hide()  # Hidden until login
+      
 
     def load_fieldbook_template(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Fieldbook Template", "", "Word Files (*.docx)")
@@ -943,7 +887,6 @@ class MainWindow(QMainWindow):
 
     def show_login(self):
         self.menu_file.setEnabled(False)
-        self.reset_btn.hide()
         while self.stacked.count() > 0:
             widget = self.stacked.widget(0)
             self.stacked.removeWidget(widget)
@@ -962,16 +905,7 @@ class MainWindow(QMainWindow):
         home = QWidget()
         layout = QVBoxLayout(home)
         
-        # Row for reset button (right-aligned)
-        top_row = QHBoxLayout()
-        top_row.addStretch()
-        reset_btn = QPushButton("Reset")
-        reset_btn.setStyleSheet("margin:8px 18px 0 0; padding:8px 22px; font-size:15px; font-weight:600;")
-        reset_btn.setFixedHeight(42)
-        reset_btn.setFixedWidth(110)
-        reset_btn.clicked.connect(self.reset_application)
-        top_row.addWidget(reset_btn)
-        layout.addLayout(top_row)
+       
 
 
         label = QLabel(f"Welcome, {self.username}!")
@@ -1001,6 +935,7 @@ class MainWindow(QMainWindow):
         if not folder or not os.path.isdir(folder):
             QMessageBox.information(self, "Set Folder", "Please set the Fieldbook folder from the File menu.")
             return
+        # Always create a new viewer
         self.fieldbook_viewer = BookViewer(self.config, "fieldbook_folder", "Fieldbook Viewer")
         self.stacked.addWidget(self.fieldbook_viewer)
         self.stacked.setCurrentWidget(self.fieldbook_viewer)
@@ -1046,6 +981,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Print", "Print dialog has been opened in your system's Word processor.\nPlease print from there.")
         except Exception as e:
             QMessageBox.warning(self, "Print Error", f"Could not open print dialog automatically.\nError: {str(e)}\nYou can open and print the saved DOCX file manually.")
+    
     def logout(self):
         self.username = None
         self.role = None
@@ -1055,14 +991,7 @@ class MainWindow(QMainWindow):
             widget.deleteLater()
         self.show_login()
     
-    def reset_application(self):
-        QApplication.clipboard().clear(mode=QClipboard.Clipboard)
-        QApplication.clipboard().clear(mode=QClipboard.Selection)
-        if fieldbook_doc_mgr.is_loaded():
-            fieldbook_doc_mgr.close()
-        self.show_login()
-        QMessageBox.information(self, "Reset", "Application has been reset to its initial state.")
-
+    
 
 def main():
     app = QApplication(sys.argv)
